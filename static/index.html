@@ -1050,6 +1050,30 @@
   #terminal .ansi-italic { font-style: italic; }
   #terminal .ansi-underline { text-decoration: underline; }
   #terminal .ansi-inverse { background: var(--text); color: var(--bg); }
+  /* 删除线：与下划线叠加时用 text-decoration 的多值语法 */
+  #terminal .ansi-strike { text-decoration: line-through; }
+  #terminal .ansi-underline.ansi-strike {
+    text-decoration: underline line-through;
+  }
+  /* 上划线 */
+  #terminal .ansi-overline { text-decoration: overline; }
+  #terminal .ansi-underline.ansi-overline {
+    text-decoration: underline overline;
+  }
+  #terminal .ansi-underline.ansi-overline.ansi-strike {
+    text-decoration: underline overline line-through;
+  }
+  /* 隐藏：文字不可见但保留占位（终端语义） */
+  #terminal .ansi-conceal { visibility: hidden; }
+  /* 闪烁：慢速闪烁，尊重系统的「减少动态效果」偏好 */
+  #terminal .ansi-blink { animation: ansi-blink 1s step-end infinite; }
+  @keyframes ansi-blink {
+    0%, 50% { opacity: 1; }
+    50.01%, 100% { opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #terminal .ansi-blink { animation: none; }
+  }
   #terminal .ansi-fg0 { color: var(--ansi-0); }
   #terminal .ansi-fg1 { color: var(--ansi-1); }
   #terminal .ansi-fg2 { color: var(--ansi-2); }
@@ -1962,6 +1986,8 @@
   let cursorVisible = true;
   /** 光标是否处于聚焦状态（未聚焦时用空心框） */
   let cursorFocused = false;
+  /** 保存的光标位置（ESC 7 / CSI s），null 表示未保存 */
+  let savedCursor = null;
 
   // 自上次渲染后被修改过的行号集合。
   // 只靠「新增行 + 最后一行」判断是不够的：某行可能在为空时就被渲染过，
@@ -1969,6 +1995,27 @@
   let dirtyRows = new Set();
 
   const MAX_SCREEN_ROWS = 5000;   // 行缓冲上限，超出裁剪最早的
+
+  /**
+   * 标记所有行为脏，触发下一帧全量重绘。
+   * 用于插入/删除行、滚动等会整体位移的操作 —— 这些操作会让已渲染的
+   * 行节点索引全部失效，只标单行是不够的。
+   */
+  function markAllDirty() {
+    renderedRows = 0;
+    rowNodes = [];
+    dirtyRows.clear();
+    lastCursorRow = -1;
+    for (let r = 0; r < screen.length; r++) dirtyRows.add(r);
+  }
+
+  /** 行数超过上限时丢弃最早的行 */
+  function trimScreen() {
+    if (screen.length <= MAX_SCREEN_ROWS) return;
+    const drop = screen.length - MAX_SCREEN_ROWS;
+    screen.splice(0, drop);
+    cursor.row = Math.max(0, cursor.row - drop);
+  }
 
   /** 当前生效的样式，用于新建 cell */
   function currentStyle() {
@@ -2058,6 +2105,7 @@
     screen = [{ cells: [] }];
     cursor.row = 0;
     cursor.col = 0;
+    savedCursor = null;
     renderedRows = 0;
     rowNodes = [];
     dirtyRows.clear();
@@ -2123,6 +2171,132 @@
       line.cells.splice(cursor.col, 0, { ch: " ", cls: null, style: null });
     }
     dirtyRows.add(cursor.row);
+  }
+
+  /** 在光标行插入若干空行，原有内容下移（CSI L） */
+  function insertLines(n) {
+    const count = Math.max(1, n || 1);
+    const blank = () => ({ cells: [] });
+    for (let i = 0; i < count; i++) {
+      screen.splice(cursor.row, 0, blank());
+    }
+    trimScreen();
+    markAllDirty();
+  }
+
+  /** 删除光标行及其下若干行（CSI M） */
+  function deleteLines(n) {
+    const count = Math.max(1, n || 1);
+    screen.splice(cursor.row, count);
+    if (screen.length === 0) screen.push({ cells: [] });
+    if (cursor.row >= screen.length) cursor.row = screen.length - 1;
+    markAllDirty();
+  }
+
+  /**
+   * 向上滚动 n 行（CSI S）。
+   * 首行被移出，末尾补空行；光标不动。
+   */
+  function scrollUp(n) {
+    const count = Math.max(1, n || 1);
+    for (let i = 0; i < count; i++) {
+      screen.shift();
+      screen.push({ cells: [] });
+    }
+    markAllDirty();
+  }
+
+  /** 向下滚动 n 行（CSI T）。末尾行被移出，行首补空行。 */
+  function scrollDown(n) {
+    const count = Math.max(1, n || 1);
+    for (let i = 0; i < count; i++) {
+      screen.pop();
+      screen.unshift({ cells: [] });
+    }
+    markAllDirty();
+  }
+
+  /** 重复前一个字符 n 次（CSI b） */
+  function repeatChar(n) {
+    const line = screen[cursor.row];
+    if (!line || cursor.col === 0) return;
+    const prev = line.cells[cursor.col - 1];
+    if (!prev) return;
+    const count = Math.max(1, n || 1);
+    for (let i = 0; i < count; i++) {
+      line.cells.splice(cursor.col, 0, { ch: prev.ch, cls: prev.cls, style: prev.style });
+      cursor.col += 1;
+    }
+    dirtyRows.add(cursor.row);
+  }
+
+  /** 保存光标位置（DECSC / SCOSC） */
+  function saveCursor() {
+    savedCursor = { row: cursor.row, col: cursor.col };
+  }
+
+  /** 恢复光标位置（DECRC / SCORC）。未保存过则回到原点。 */
+  function restoreCursor() {
+    const prev = cursor.row;
+    if (savedCursor) {
+      cursor.row = Math.min(savedCursor.row, screen.length - 1);
+      cursor.col = savedCursor.col;
+    } else {
+      cursor.row = 0;
+      cursor.col = 0;
+    }
+    dirtyRows.add(prev);
+    dirtyRows.add(cursor.row);
+  }
+
+  /**
+   * 索引：下移一行（ESC D）。
+   *
+   * 若已在末行，则**新增一行**（屏幕向下延伸）；只有超过行数上限时
+   * 才真正上滚丢弃最早的行。这与 newLine() 的处理一致 ——
+   * 早期实现无条件 scrollUp(1)，会导致单行屏幕上的内容被直接丢掉。
+   */
+  function indexDown() {
+    cursor.row += 1;
+    while (screen.length <= cursor.row) {
+      screen.push({ cells: [] });
+    }
+    trimScreen();
+    dirtyRows.add(cursor.row);
+  }
+
+  /**
+   * 反索引：上移一行（ESC M）。
+   *
+   * 若已在首行，则整屏下滚（首行补空行），因为上方没有空间可去。
+   */
+  function reverseIndex() {
+    if (cursor.row > 0) {
+      cursor.row -= 1;
+    } else {
+      // 已在首行：整体下滚一行，光标留在首行
+      screen.unshift({ cells: [] });
+      trimScreen();
+      markAllDirty();
+    }
+    dirtyRows.add(cursor.row);
+  }
+
+  /** 下一行：回到行首并下移一行（ESC E，NEL） */
+  function nextLine() {
+    cursor.col = 0;
+    indexDown();
+  }
+
+  /** 全复位（ESC c，RIS）：清屏、重置样式与光标 */
+  function resetTerminal() {
+    screen = [{ cells: [] }];
+    cursor.row = 0;
+    cursor.col = 0;
+    savedCursor = null;
+    resetSgr();
+    currentCls = sgrToClass();
+    markAllDirty();
   }
 
   /** 把一段纯文本按终端语义写入缓冲 */
@@ -2334,6 +2508,8 @@
   // ---------- ANSI 转义序列处理 ----------
   // 设备（如 Linux shell）会发送 CSI 序列控制光标与颜色。
   // 控制字符（\r \n \b \t）由 writeText 直接处理；这里只解析 ESC 序列。
+  //
+  // 支持的序列见 README「ANSI 颜色支持」一节。
 
   let ansiBuf = "";        // 跨包残留的未完成转义序列
 
@@ -2383,6 +2559,41 @@
             return;
           }
           i = stop;
+          plainStart = i;
+          continue;
+        }
+        // DCS / SOS / PM / APC：ESC P|X|^|_ ... ST(ESC \) 或 BEL
+        //
+        // 必须整段吞掉，否则串内内容会被当作普通文本显示出来
+        // （例如某些设备上报的终端能力查询响应）。
+        if (next === "P" || next === "X" || next === "^" || next === "_") {
+          const end = data.indexOf("\x07", i + 2);
+          const end2 = data.indexOf("\x1b\\", i + 2);
+          let stop = -1;
+          if (end >= 0 && (end2 < 0 || end < end2)) stop = end + 1;
+          else if (end2 >= 0) stop = end2 + 2;
+          if (stop < 0) {
+            ansiBuf = data.slice(i);
+            return;
+          }
+          i = stop;
+          plainStart = i;
+          continue;
+        }
+        // 双字符转义序列
+        if (next === "7") { saveCursor(); i += 2; plainStart = i; continue; }  // DECSC
+        if (next === "8") { restoreCursor(); i += 2; plainStart = i; continue; } // DECRC
+        if (next === "D") { indexDown(); i += 2; plainStart = i; continue; }   // IND 索引
+        if (next === "M") { reverseIndex(); i += 2; plainStart = i; continue; } // RI 反索引
+        if (next === "E") { nextLine(); i += 2; plainStart = i; continue; }    // NEL 下一行
+        if (next === "c") { resetTerminal(); i += 2; plainStart = i; continue; } // RIS 全复位
+        if (next === "(" || next === ")" || next === "*" || next === "+") {
+          // 字符集选择（SCS）：ESC ( X 等，后跟一个字符
+          if (data[i + 2] === undefined) {
+            ansiBuf = data.slice(i);
+            return;
+          }
+          i += 3;
           plainStart = i;
           continue;
         }
@@ -2445,10 +2656,19 @@
       case "B": moveCursor("down", n0); break;
       case "C": moveCursor("right", n0); break;
       case "D": moveCursor("left", n0); break;
+      case "E": moveCursor("down", n0); moveCursor("col", 1); break;  // CNL 下移回行首
+      case "F": moveCursor("up", n0); moveCursor("col", 1); break;    // CPL 上移回行首
       case "G": moveCursor("col", n0); break;
       case "d": moveCursor("row", n0); break;
       case "P": deleteChar(n0); break;      // 删除字符
       case "@": insertChars(n0); break;     // 插入空位
+      case "L": insertLines(n0); break;     // 插入行
+      case "M": deleteLines(n0); break;     // 删除行
+      case "S": scrollUp(n0); break;        // 上滚
+      case "T": scrollDown(n0); break;      // 下滚
+      case "b": repeatChar(n0); break;      // 重复前一个字符
+      case "s": saveCursor(); break;        // SCOSC 保存光标
+      case "u": restoreCursor(); break;     // SCORC 恢复光标
       case "X": {                            // 擦除字符（保留位置）
         const line = screen[cursor.row];
         if (line) {
@@ -2529,18 +2749,25 @@
 
       // 标准属性
       if (code === 0) {
-        sgr.bold = sgr.dim = sgr.italic = sgr.underline = sgr.inverse = false;
-        sgr.fg = sgr.bg = null;
-        sgr.fgRgb = sgr.bgRgb = null;
+        resetSgr();
       } else if (code === 1) sgr.bold = true;
       else if (code === 2) sgr.dim = true;
       else if (code === 3) sgr.italic = true;
       else if (code === 4) sgr.underline = true;
+      else if (code === 5 || code === 6) sgr.blink = true;
       else if (code === 7) sgr.inverse = true;
+      else if (code === 8) sgr.conceal = true;
+      else if (code === 9) sgr.strike = true;
+      else if (code === 21) sgr.underline = true;   // 双下划线，按单下划线处理
       else if (code === 22) sgr.bold = sgr.dim = false;
       else if (code === 23) sgr.italic = false;
       else if (code === 24) sgr.underline = false;
+      else if (code === 25) sgr.blink = false;
       else if (code === 27) sgr.inverse = false;
+      else if (code === 28) sgr.conceal = false;
+      else if (code === 29) sgr.strike = false;
+      else if (code === 53) sgr.overline = true;
+      else if (code === 55) sgr.overline = false;
       else if (code >= 30 && code <= 37) {
         sgr.fg = String(code - 30);
         sgr.fgRgb = null;
@@ -2562,6 +2789,23 @@
       }
     }
     currentCls = sgrToClass();
+  }
+
+  /** 重置所有 SGR 属性到默认值 */
+  function resetSgr() {
+    sgr.bold = false;
+    sgr.dim = false;
+    sgr.italic = false;
+    sgr.underline = false;
+    sgr.blink = false;
+    sgr.inverse = false;
+    sgr.conceal = false;
+    sgr.strike = false;
+    sgr.overline = false;
+    sgr.fg = null;
+    sgr.bg = null;
+    sgr.fgRgb = null;
+    sgr.bgRgb = null;
   }
 
   /** 把 256 色索引或 RGB 分量解析为 CSS 颜色 */
@@ -2607,7 +2851,11 @@
     if (sgr.dim) cls.push("ansi-dim");
     if (sgr.italic) cls.push("ansi-italic");
     if (sgr.underline) cls.push("ansi-underline");
+    if (sgr.blink) cls.push("ansi-blink");
     if (sgr.inverse) cls.push("ansi-inverse");
+    if (sgr.conceal) cls.push("ansi-conceal");
+    if (sgr.strike) cls.push("ansi-strike");
+    if (sgr.overline) cls.push("ansi-overline");
     if (sgr.fg !== null) cls.push("ansi-fg" + sgr.fg);
     if (sgr.bg !== null) cls.push("ansi-bg" + sgr.bg);
     return cls.length ? cls.join(" ") : null;
@@ -2627,7 +2875,11 @@
     dim: false,
     italic: false,
     underline: false,
+    blink: false,
     inverse: false,
+    conceal: false,
+    strike: false,
+    overline: false,
     fg: null,      // null=默认色；"0".."7"=标准色；"b0".."b7"=高亮色
     bg: null,
     fgRgb: null,   // 256 色 / 真彩色（内联样式）
@@ -3211,6 +3463,21 @@
 
   // 标注不可用的字体（系统字体未安装 / 内置字体当前构建未包含），异步完成
   markUnavailableFonts();
+
+  // ---------- 调试钩子 ----------
+  // 暴露少量内部函数，便于在浏览器控制台或自动化测试中直接驱动终端。
+  // 仅在 URL 带 ?debug=1 时挂载，正常使用不会污染全局。
+  if (new URLSearchParams(location.search).has("debug")) {
+    window.__term = {
+      feed: (s) => feedAnsi(s),
+      clear: () => clearScreen(),
+      screen: () => screen.map((l) => l.cells.map((c) => c.ch).join("")),
+      cursor: () => ({ ...cursor }),
+      sgr: () => ({ ...sgr }),
+      savedCursor: () => savedCursor,
+      write: (s) => writeText(s),
+    };
+  }
 
   setPortOpen(false, null);
   applyInputMode();
