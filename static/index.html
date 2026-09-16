@@ -1,0 +1,1980 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>XMODEM 串口传输工具</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #171d26;
+    --panel-2: #1e2632;
+    --border: #2a3441;
+    --text: #d8e0ea;
+    --muted: #7d8b9c;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --success: #22c55e;
+    --warn: #f59e0b;
+    --error: #ef4444;
+    --mono: "Cascadia Mono", "Consolas", "Menlo", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 14px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 16px; font-weight: 600; }
+  .badge {
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 10px;
+    background: var(--panel-2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  .badge.on { color: var(--success); border-color: var(--success); }
+  .badge.off { color: var(--muted); }
+  .badge.err { color: var(--error); border-color: var(--error); }
+  .spacer { flex: 1; }
+
+  main {
+    flex: 1;
+    display: flex;
+    gap: 1px;
+    background: var(--border);
+    min-height: 0;
+  }
+  .col {
+    background: var(--bg);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .col-left { width: 340px; flex-shrink: 0; }
+  .col-right { flex: 1; }
+
+  .section {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    overflow-y: auto;
+  }
+  .section.grow { flex: 1; min-height: 0; }
+  .section h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    margin-bottom: 10px;
+    font-weight: 600;
+  }
+
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input, select, button {
+    font-family: inherit;
+    font-size: 13px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    color: var(--text);
+    padding: 7px 10px;
+    width: 100%;
+    outline: none;
+  }
+  input:focus, select:focus { border-color: var(--accent); }
+  input[type="file"] { padding: 5px; }
+  input[type="checkbox"] { width: auto; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .field { margin-bottom: 10px; }
+
+  button {
+    cursor: pointer;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 500;
+    transition: background .15s;
+  }
+  button:hover:not(:disabled) { background: var(--accent-hover); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.secondary {
+    background: var(--panel-2);
+    border-color: var(--border);
+    color: var(--text);
+  }
+  button.secondary:hover:not(:disabled) { background: var(--border); }
+  button.danger { background: var(--error); border-color: var(--error); }
+
+  .checkline { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .checkline label { margin: 0; color: var(--text); font-size: 13px; }
+
+  /* 进度条 */
+  .progress-wrap { margin-top: 10px; }
+  .progress-bar {
+    height: 8px;
+    background: var(--panel-2);
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), #60a5fa);
+    transition: width .2s;
+  }
+  .progress-text {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+    font-family: var(--mono);
+    word-break: break-all;
+  }
+
+  /* 终端 */
+  .term-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  .term-head h2 { margin: 0; flex-shrink: 0; }
+  .term-head .spacer { flex: 1 1 auto; min-width: 0; }
+
+  /* 终端工具栏中的紧凑控件 */
+  .term-head .opt {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--muted);
+    margin: 0;
+  }
+  .term-head .opt select {
+    width: auto;
+    padding: 4px 6px;
+    font-size: 12px;
+  }
+  .term-head .opt input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+  }
+  .term-head .opt span { white-space: nowrap; }
+
+  #terminal {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 12px 16px;
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
+    min-height: 120px;
+    color: #b9c6d4;
+  }
+  #terminal .sys { color: var(--muted); }
+  #terminal .err { color: var(--error); }
+  #terminal .ok { color: var(--success); }
+  #terminal .tx { color: var(--warn); }
+  /* 每行一个块级容器，便于增量替换单行 */
+  #terminal .term-line { display: inline; }
+  /* 时间戳：弱化显示，不干扰正文 */
+  #terminal .ts { color: #5b6b7d; user-select: none; }
+  /* 光标：插入符，不占用字符位置、不改变字符颜色 */
+  #terminal .cursor {
+    display: inline-block;
+    width: 0;
+    /* 关键：必须给出实际高度，否则绝对定位的伪元素高度会塌成 0 而不可见 */
+    height: 1.15em;
+    position: relative;
+    vertical-align: text-bottom;
+  }
+  /* 用伪元素画插入符，避免影响文本流与字符本身 */
+  #terminal .cursor::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: transparent;
+    box-shadow: inset 0 0 0 1px rgba(185, 198, 212, .7);
+    border-radius: 1px;
+  }
+  #terminal .cursor.focused::before {
+    background: #7dd3fc;
+    box-shadow: none;
+    animation: cursor-blink 1.1s step-end infinite;
+  }
+  @keyframes cursor-blink {
+    0%, 55% { opacity: 1; }
+    55.01%, 100% { opacity: 0; }
+  }
+
+  /* ANSI 基础配色（对应 SGR 30-37 / 90-97 / 40-47 / 100-107） */
+  #terminal .ansi-bold { font-weight: 700; }
+  #terminal .ansi-dim { opacity: .6; }
+  #terminal .ansi-italic { font-style: italic; }
+  #terminal .ansi-underline { text-decoration: underline; }
+  #terminal .ansi-inverse { background: var(--text); color: var(--bg); }
+  #terminal .ansi-fg0 { color: #4b5563; }
+  #terminal .ansi-fg1 { color: #ef4444; }
+  #terminal .ansi-fg2 { color: #22c55e; }
+  #terminal .ansi-fg3 { color: #eab308; }
+  #terminal .ansi-fg4 { color: #3b82f6; }
+  #terminal .ansi-fg5 { color: #d946ef; }
+  #terminal .ansi-fg6 { color: #06b6d4; }
+  #terminal .ansi-fg7 { color: #e5e7eb; }
+  #terminal .ansi-fgb0 { color: #9ca3af; }
+  #terminal .ansi-fgb1 { color: #f87171; }
+  #terminal .ansi-fgb2 { color: #4ade80; }
+  #terminal .ansi-fgb3 { color: #facc15; }
+  #terminal .ansi-fgb4 { color: #60a5fa; }
+  #terminal .ansi-fgb5 { color: #e879f9; }
+  #terminal .ansi-fgb6 { color: #22d3ee; }
+  #terminal .ansi-fgb7 { color: #ffffff; }
+  #terminal .ansi-bg0 { background: #4b5563; }
+  #terminal .ansi-bg1 { background: #7f1d1d; }
+  #terminal .ansi-bg2 { background: #14532d; }
+  #terminal .ansi-bg3 { background: #713f12; }
+  #terminal .ansi-bg4 { background: #1e3a8a; }
+  #terminal .ansi-bg5 { background: #701a75; }
+  #terminal .ansi-bg6 { background: #164e63; }
+  #terminal .ansi-bg7 { background: #374151; }
+  #terminal .ansi-bgb0 { background: #6b7280; }
+  #terminal .ansi-bgb1 { background: #991b1b; }
+  #terminal .ansi-bgb2 { background: #166534; }
+  #terminal .ansi-bgb3 { background: #854d0e; }
+  #terminal .ansi-bgb4 { background: #1e40af; }
+  #terminal .ansi-bgb5 { background: #86198f; }
+  #terminal .ansi-bgb6 { background: #155e75; }
+  #terminal .ansi-bgb7 { background: #4b5563; }
+
+  .term-input {
+    display: flex;
+    gap: 8px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--panel);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    align-items: center;
+  }
+  .term-input .hint { flex: 1; }
+  .term-input input[type="text"] {
+    font-family: var(--mono);
+    flex: 1;
+  }
+  .term-input button { width: auto; padding: 7px 16px; white-space: nowrap; }
+  .term-input kbd {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--text);
+  }
+  #terminal:focus { outline: none; }
+  #terminal.active { box-shadow: inset 0 0 0 1px var(--accent); }
+
+  .log {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+    max-height: 140px;
+    overflow-y: auto;
+  }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a4653; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>XMODEM 串口传输工具</h1>
+  <span id="conn-badge" class="badge off">未连接</span>
+  <span id="port-badge" class="badge off">串口未打开</span>
+  <div class="spacer"></div>
+  <span id="ws-badge" class="badge err">服务离线</span>
+</header>
+
+<main>
+  <!-- 左侧：配置区 -->
+  <div class="col col-left">
+    <div class="section">
+      <h2>串口设置</h2>
+      <div class="field">
+        <label>串口</label>
+        <div class="row">
+          <select id="port-select"></select>
+          <button class="secondary" id="btn-refresh" style="flex:0 0 auto;width:auto;padding:7px 12px;">刷新</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>波特率</label>
+          <select id="baud">
+            <option>9600</option>
+            <option>19200</option>
+            <option>38400</option>
+            <option>57600</option>
+            <option selected>115200</option>
+            <option>230400</option>
+            <option>460800</option>
+            <option>921600</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>数据位</label>
+          <select id="data-bits">
+            <option>5</option><option>6</option><option>7</option>
+            <option selected>8</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>校验位</label>
+          <select id="parity">
+            <option value="none" selected>无</option>
+            <option value="odd">奇</option>
+            <option value="even">偶</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>停止位</label>
+          <select id="stop-bits">
+            <option value="1" selected>1</option>
+            <option value="2">2</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>流控</label>
+        <select id="flow">
+          <option value="none" selected>无</option>
+          <option value="software">软件 (XON/XOFF)</option>
+          <option value="hardware">硬件 (RTS/CTS)</option>
+        </select>
+      </div>
+      <div class="row">
+        <button id="btn-open">打开串口</button>
+        <button class="secondary" id="btn-close" disabled>关闭</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>XMODEM 发送</h2>
+      <div class="field">
+        <label>文件</label>
+        <input type="file" id="file-input">
+      </div>
+      <div class="checkline">
+        <input type="checkbox" id="use-1k">
+        <label for="use-1k">使用 XMODEM-1K（1024 字节包）</label>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>握手超时 (秒)</label>
+          <input type="number" id="hs-timeout" value="60" min="1">
+        </div>
+        <div class="field">
+          <label>包超时 (毫秒)</label>
+          <input type="number" id="pkt-timeout" value="3000" min="100">
+        </div>
+      </div>
+      <div class="row">
+        <button id="btn-send" disabled>开始发送</button>
+        <button class="secondary" id="btn-cancel" disabled>取消</button>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <div class="progress-text" id="progress-text">就绪</div>
+      </div>
+    </div>
+
+    <div class="section grow">
+      <h2>日志</h2>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+  <!-- 右侧：终端 -->
+  <div class="col col-right">
+    <div class="term-head">
+      <h2>串口终端</h2>
+      <div class="spacer"></div>
+
+      <label class="opt" title="输入方式：终端模式逐键即时发送；文本框模式整段输入后发送">
+        <span>输入</span>
+        <select id="input-mode">
+          <option value="terminal" selected>终端</option>
+          <option value="textbox">文本框</option>
+        </select>
+      </label>
+
+      <label class="opt" title="输出显示格式">
+        <span>显示</span>
+        <select id="view-mode">
+          <option value="text" selected>文本</option>
+          <option value="hex">HEX</option>
+        </select>
+      </label>
+
+      <label class="opt" title="发送时的数据格式">
+        <span>发送</span>
+        <select id="tx-mode">
+          <option value="text" selected>文本</option>
+          <option value="hex">HEX</option>
+        </select>
+      </label>
+
+      <label class="opt" title="每行输出前添加时间戳">
+        <input type="checkbox" id="opt-timestamp">
+        <span>时间戳</span>
+      </label>
+
+      <label class="opt" title="本地回显按键。设备已回显时请关闭，否则字符会显示两遍">
+        <input type="checkbox" id="opt-echo">
+        <span>本地回显</span>
+      </label>
+
+      <label class="opt" title="发送时追加的行尾字符">
+        <span>行尾</span>
+        <select id="line-ending">
+          <option value="cr" selected>CR</option>
+          <option value="lf">LF</option>
+          <option value="crlf">CRLF</option>
+          <option value="none">无</option>
+        </select>
+      </label>
+
+      <label class="opt" title="导出格式：文本（带时间戳）/ HEX dump / 原始二进制">
+        <span>导出</span>
+        <select id="export-format">
+          <option value="text" selected>文本</option>
+          <option value="hexdump">HEX</option>
+          <option value="binary">原始</option>
+        </select>
+      </label>
+
+      <button class="secondary" id="btn-clear" style="width:auto;padding:5px 10px;">清屏</button>
+      <button class="secondary" id="btn-save" style="width:auto;padding:5px 10px;" title="导出接收到的全部数据（不受屏幕显示行数限制）">导出</button>
+    </div>
+
+    <div id="terminal" tabindex="0"></div>
+
+    <!-- 终端模式：逐键即时发送 -->
+    <div class="term-input" id="pane-terminal">
+      <span class="hint" id="term-hint">点击终端区域后直接敲键盘即可发送（逐键即时发送）</span>
+      <span><kbd>Ctrl</kbd>+<kbd>C</kbd> 中断</span>
+      <button class="secondary" id="btn-focus" style="width:auto;padding:4px 10px;">聚焦终端</button>
+    </div>
+
+    <!-- 文本框模式：整段输入后发送 -->
+    <div class="term-input" id="pane-textbox" style="display:none">
+      <input type="text" id="term-text" placeholder="输入要发送的内容，回车发送" disabled>
+      <button id="btn-send-text" disabled>发送</button>
+      <button class="secondary" id="btn-send-text-nl" disabled title="发送并在末尾追加行尾字符">发送+换行</button>
+    </div>
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- 工具函数 ----------
+  const $ = (id) => document.getElementById(id);
+
+  function b64ToBytes(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  function bytesToB64(bytes) {
+    let bin = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(bin);
+  }
+
+  // ---------- 状态 ----------
+  const state = {
+    ws: null,
+    connected: false,
+    portOpen: false,
+    portName: null,
+    sending: false,
+    /** 输入模式："terminal"（逐键即时发送）| "textbox"（整段输入后发送） */
+    inputMode: "terminal",
+    /** 显示模式："text" | "hex" */
+    viewMode: "text",
+    /** 发送模式："text" | "hex" */
+    txMode: "text",
+    /** 是否在每行输出前添加时间戳 */
+    timestamp: false,
+    /** 是否本地回显按键（设备已回显时应关闭，否则字符显示两遍） */
+    localEcho: false,
+    /** 行尾字符："cr" | "lf" | "crlf" | "none" */
+    lineEnding: "cr",
+    reconnectTimer: null,
+  };
+
+  // ---------- 工具：行尾与时间戳 ----------
+
+  /** 返回当前行尾设置对应的字节序列 */
+  function lineEndingBytes() {
+    switch (state.lineEnding) {
+      case "cr": return [0x0D];
+      case "lf": return [0x0A];
+      case "crlf": return [0x0D, 0x0A];
+      default: return [];
+    }
+  }
+
+  /** 生成 "HH:MM:SS.mmm" 形式的时间戳 */
+  function timeStamp() {
+    const d = new Date();
+    const p = (n, w = 2) => String(n).padStart(w, "0");
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+  }
+
+  // ---------- 工具：HEX 解析与格式化 ----------
+
+  /**
+   * 把 HEX 字符串解析为字节数组。
+   * 支持 "AA BB"、"AABB"、"0xAA,0xBB"、"AA-BB" 等常见写法；
+   * 遇到非法字符或奇数个半字节时返回错误说明。
+   */
+  function parseHex(input) {
+    // 去掉常见分隔符与前缀
+    const cleaned = input
+      .replace(/0[xX]/g, "")
+      .replace(/[\s,;:_-]/g, "");
+    if (cleaned === "") return { bytes: [] };
+    if (!/^[0-9a-fA-F]+$/.test(cleaned)) {
+      return { error: "包含非十六进制字符" };
+    }
+    if (cleaned.length % 2 !== 0) {
+      return { error: "十六进制位数必须为偶数（每字节 2 位）" };
+    }
+    const bytes = [];
+    for (let i = 0; i < cleaned.length; i += 2) {
+      bytes.push(parseInt(cleaned.slice(i, i + 2), 16));
+    }
+    return { bytes };
+  }
+
+  /** 把字节数组格式化为空格分隔的 HEX 字符串 */
+  function formatHex(bytes) {
+    let out = "";
+    for (const b of bytes) out += b.toString(16).padStart(2, "0") + " ";
+    return out;
+  }
+
+  // ---------- 终端输出 ----------
+  const terminal = $("terminal");
+
+  let rafScheduled = false;
+  let dirty = false;          // 行缓冲是否有变化，待渲染
+  let autoScroll = true;      // 用户向上滚动时暂停自动滚动
+
+  // 按 UTF-8 增量解码，避免多字节字符被拆包时出现乱码
+  const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
+
+  // ---------- 接收记录（用于导出，不受 DOM 裁剪影响） ----------
+  // 终端 DOM 由行缓冲渲染而来，行数上限为 MAX_SCREEN_ROWS；
+  // 导出需要完整数据，因此单独维护一份原始字节与带时间戳的文本记录。
+  const capture = {
+    /** 是否记录（关闭可节省内存，长时间高速通信时可关闭） */
+    enabled: true,
+    /** 原始接收字节总数（含被裁剪的部分） */
+    totalBytes: 0,
+    /** 记录上限（字节），超出后丢弃最早的记录 */
+    limit: 8 * 1024 * 1024,
+    /** 原始字节分片，导出二进制/HEX 时按序拼接 */
+    chunks: [],
+    /** 带时间戳的文本行，导出文本时使用 */
+    lines: [],
+    /** 当前未结束的行缓冲 */
+    partial: "",
+    /** 上一次写入时间戳的时间（用于判断是否新起一行） */
+    lastStamp: null,
+  };
+
+  /** 清空接收记录 */
+  function resetCapture() {
+    capture.totalBytes = 0;
+    capture.chunks = [];
+    capture.lines = [];
+    capture.partial = "";
+    capture.lastStamp = null;
+  }
+
+  /** 把接收到的字节写入记录 */
+  function captureBytes(bytes) {
+    if (!capture.enabled) return;
+    capture.totalBytes += bytes.length;
+    capture.chunks.push(bytes);
+    // 超出上限时丢弃最早的记录
+    let size = capture.chunks.reduce((n, c) => n + c.length, 0);
+    while (size > capture.limit && capture.chunks.length > 1) {
+      size -= capture.chunks.shift().length;
+    }
+  }
+
+  /** 把解码后的文本写入记录，按行拆分并附时间戳 */
+  function captureText(text) {
+    if (!capture.enabled || !text) return;
+    const parts = (capture.partial + text).split("\n");
+    // 最后一段可能是不完整的行，留到下次处理
+    capture.partial = parts.pop();
+    for (const line of parts) {
+      capture.lines.push({ ts: timeStamp(), text: line });
+    }
+    // 行记录同样限制数量，避免内存无上限增长
+    const maxLines = 200000;
+    if (capture.lines.length > maxLines) {
+      capture.lines.splice(0, capture.lines.length - maxLines);
+    }
+  }
+
+  /** 把记录中的原始字节拼接为一个 Uint8Array */
+  function captureAllBytes() {
+    let total = 0;
+    for (const c of capture.chunks) total += c.length;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of capture.chunks) {
+      out.set(c, off);
+      off += c.length;
+    }
+    return out;
+  }
+
+  /** 生成带时间戳的纯文本导出内容 */
+  function captureAsText() {
+    let out = "";
+    for (const l of capture.lines) out += `${l.ts} ${l.text}\n`;
+    // 未结束的最后一行也要导出
+    if (capture.partial) out += `${timeStamp()} ${capture.partial}\n`;
+    return out;
+  }
+
+  /** 生成 HEX dump 形式的导出内容 */
+  function captureAsHexDump() {
+    const bytes = captureAllBytes();
+    let out = "";
+    for (let i = 0; i < bytes.length; i += HEX_ROW) {
+      const row = bytes.subarray(i, i + HEX_ROW);
+      const hex = [];
+      let ascii = "";
+      for (const b of row) {
+        hex.push(b.toString(16).padStart(2, "0"));
+        ascii += b >= 0x20 && b < 0x7F ? String.fromCharCode(b) : ".";
+      }
+      const pad = "   ".repeat(HEX_ROW - row.length);
+      // 附上行内首字节的偏移量，便于定位
+      const offset = i.toString(16).padStart(8, "0");
+      out += `${offset}  ${hex.join(" ")}${pad}  |${ascii}|\n`;
+    }
+    return out;
+  }
+
+  function scheduleFlush() {
+    if (rafScheduled) return;
+    rafScheduled = true;
+    requestAnimationFrame(flushTerminal);
+  }
+
+  // ---------- 终端行缓冲模型 ----------
+  // 只追加的渲染方式无法处理光标定位与重绘（方向键、readline 行编辑都会用到），
+  // 因此这里维护一个真正的行缓冲：屏幕 = 若干行，每行 = 若干带样式的片段，
+  // 光标记录在 (row, col)，所有输出都先改缓冲、再由 requestAnimationFrame 统一渲染。
+
+  /** 屏幕行缓冲：[{ cells: [{ch, cls, style}], }] */
+  let screen = [{ cells: [] }];
+  /** 光标位置 */
+  const cursor = { row: 0, col: 0 };
+  /** 光标是否可见（ESC[?25h / ESC[?25l 控制） */
+  let cursorVisible = true;
+  /** 光标是否处于聚焦状态（未聚焦时用空心框） */
+  let cursorFocused = false;
+
+  // 自上次渲染后被修改过的行号集合。
+  // 只靠「新增行 + 最后一行」判断是不够的：某行可能在为空时就被渲染过，
+  // 之后才写入内容，此时它既不新也不是最后一行，会被漏掉。
+  let dirtyRows = new Set();
+
+  const MAX_SCREEN_ROWS = 5000;   // 行缓冲上限，超出裁剪最早的
+
+  /** 当前生效的样式，用于新建 cell */
+  function currentStyle() {
+    return { cls: currentCls, style: sgrToStyle() };
+  }
+
+  /** 在光标处插入一个字符 */
+  function putChar(ch) {
+    const line = screen[cursor.row];
+    if (!line) return;
+    const st = currentStyle();
+    // 若光标在行中间，覆盖已有字符（终端语义），否则追加
+    if (cursor.col < line.cells.length) {
+      line.cells[cursor.col] = { ch, cls: st.cls, style: st.style };
+    } else {
+      // 补齐中间的空位
+      while (line.cells.length < cursor.col) {
+        line.cells.push({ ch: " ", cls: null, style: null });
+      }
+      line.cells.push({ ch, cls: st.cls, style: st.style });
+    }
+    cursor.col++;
+    dirtyRows.add(cursor.row);
+  }
+
+  /**
+   * 光标左移时，若目标位置是行尾之外的空位，需要把该位置实体化，
+   * 否则后续字符会插到错误的位置。
+   */
+  function materializeCursorCell() {
+    const line = screen[cursor.row];
+    if (!line) return;
+    while (line.cells.length <= cursor.col) {
+      line.cells.push({ ch: " ", cls: null, style: null });
+    }
+    dirtyRows.add(cursor.row);
+  }
+
+  /** 换行，必要时滚动 */
+  function newLine() {
+    // 光标离开当前行，旧行需要重绘以移除光标
+    dirtyRows.add(cursor.row);
+    cursor.row++;
+    cursor.col = 0;
+    while (screen.length <= cursor.row) {
+      screen.push({ cells: [] });
+    }
+    // 超出上限时丢弃最早的行
+    if (screen.length > MAX_SCREEN_ROWS) {
+      const drop = screen.length - MAX_SCREEN_ROWS;
+      screen.splice(0, drop);
+      cursor.row = Math.max(0, cursor.row - drop);
+      // 行被整体上移，已渲染的节点索引全部失效，下一帧需全量重建。
+      // 必须同时清空 DOM：否则下一帧会把所有行当作「新行」追加，
+      // 与已有内容重复叠加（表现为同一行内容反复堆叠）。
+      renderedRows = 0;
+      rowNodes = [];
+      dirtyRows.clear();
+      lastCursorRow = -1;
+      terminal.textContent = "";
+    }
+    dirtyRows.add(cursor.row);
+  }
+
+  /** 回车：回到行首 */
+  function carriageReturn() {
+    cursor.col = 0;
+  }
+
+  /**
+   * 退格：光标左移一格。
+   *
+   * 注意终端语义：`\b` 本身**只移动光标**，不删除字符。
+   * 设备（如 shell 的行编辑）常用「\b + 新字符」的方式重写内容，
+   * 若在这里直接抹掉字符，就会把设备正要重写的内容破坏掉。
+   * 真正删除字符由后续写入的空格覆盖或 CSI `P`（删除字符）完成。
+   */
+  function backspace() {
+    if (cursor.col > 0) {
+      cursor.col--;
+      materializeCursorCell();
+    }
+  }
+
+  /** 清屏 */
+  function clearScreen() {
+    screen = [{ cells: [] }];
+    cursor.row = 0;
+    cursor.col = 0;
+    renderedRows = 0;
+    rowNodes = [];
+    dirtyRows.clear();
+    lastCursorRow = -1;
+  }
+
+  /** 清行：0=光标到行尾，1=行首到光标，2=整行 */
+  function clearLine(mode) {
+    const line = screen[cursor.row];
+    if (!line) return;
+    if (mode === 0) {
+      line.cells.length = Math.min(line.cells.length, cursor.col);
+    } else if (mode === 1) {
+      for (let i = 0; i < Math.min(cursor.col, line.cells.length); i++) {
+        line.cells[i] = { ch: " ", cls: null, style: null };
+      }
+    } else {
+      line.cells.length = 0;
+    }
+    dirtyRows.add(cursor.row);
+  }
+
+  /** 光标移动：按方向与步数 */
+  function moveCursor(dir, n) {
+    n = n || 1;
+    // 光标移动会改变旧行与新行的光标渲染，两行都要重绘
+    const prevRow = cursor.row;
+    if (dir === "up") cursor.row = Math.max(0, cursor.row - n);
+    else if (dir === "down") {
+      cursor.row = Math.min(screen.length - 1, cursor.row + n);
+      while (screen.length <= cursor.row) screen.push({ cells: [] });
+    } else if (dir === "right") {
+      const len = (screen[cursor.row] || { cells: [] }).cells.length;
+      cursor.col = Math.min(len, cursor.col + n);
+    } else if (dir === "left") {
+      cursor.col = Math.max(0, cursor.col - n);
+      // 光标落到行尾之外时把该位置实体化，避免后续写入错位
+      materializeCursorCell();
+    } else if (dir === "col") {
+      // 绝对列定位（1-based）
+      cursor.col = Math.max(0, n - 1);
+      materializeCursorCell();
+    } else if (dir === "row") {
+      cursor.row = Math.max(0, Math.min(screen.length - 1, n - 1));
+    }
+    dirtyRows.add(prevRow);
+    dirtyRows.add(cursor.row);
+  }
+
+  /** 删除光标处字符 */
+  function deleteChar(n) {
+    const line = screen[cursor.row];
+    if (!line) return;
+    line.cells.splice(cursor.col, n || 1);
+    dirtyRows.add(cursor.row);
+  }
+
+  /** 插入空位 */
+  function insertChars(n) {
+    const line = screen[cursor.row];
+    if (!line) return;
+    for (let i = 0; i < n; i++) {
+      line.cells.splice(cursor.col, 0, { ch: " ", cls: null, style: null });
+    }
+    dirtyRows.add(cursor.row);
+  }
+
+  /** 把一段纯文本按终端语义写入缓冲 */
+  function writeText(text) {
+    for (const ch of text) {
+      if (ch === "\n") {
+        newLine();
+        // 开启时间戳时，在新行行首插入时间戳
+        if (state.timestamp) writeTimestamp();
+      } else if (ch === "\r") carriageReturn();
+      else if (ch === "\x08") backspace();
+      else if (ch === "\x07") { /* 响铃，忽略 */ }
+      else if (ch === "\t") {
+        // Tab 跳到下一个 8 列边界
+        const next = (Math.floor(cursor.col / 8) + 1) * 8;
+        while (cursor.col < next) putChar(" ");
+      } else putChar(ch);
+    }
+  }
+
+  /** 在当前光标处写入一个时间戳（仅用于接收内容，不发送） */
+  function writeTimestamp() {
+    const saved = currentCls;
+    currentCls = "ts";
+    for (const ch of timeStamp() + " ") putChar(ch);
+    currentCls = saved;
+  }
+
+  // ---------- 渲染 ----------
+
+  // 已渲染到 DOM 的行数：用于增量渲染，避免每帧全量重建
+  let renderedRows = 0;
+  // 每行对应的 DOM 节点，避免用索引猜测（索引在增删行后会错位）
+  let rowNodes = [];
+  // 上一次渲染时光标所在行。光标移走后该行必须重建以移除光标元素，
+  // 否则旧光标会残留，表现为「每行都有光标在闪」。
+  let lastCursorRow = -1;
+
+  /** 把行缓冲渲染为 DOM（每帧一次，只重建发生变化的部分） */
+  function flushTerminal() {
+    rafScheduled = false;
+    if (!dirty) return;
+    dirty = false;
+
+    // 记录渲染前是否处于底部，用于决定是否自动滚动
+    const wasAtBottom =
+      terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 40;
+
+    // 行缓冲被裁剪或清屏后行数变少，需要全量重建
+    if (screen.length < renderedRows) {
+      renderedRows = 0;
+      rowNodes = [];
+      dirtyRows.clear();
+      lastCursorRow = -1;
+      terminal.textContent = "";
+    }
+
+    // 需要重建的行 = 新增行 ∪ 被修改的行 ∪ 光标行 ∪ 上次光标所在行
+    // 上次光标行必须重建，否则旧行里渲染的光标元素会残留，
+    // 表现为「每行都有光标在闪」。
+    const needRebuild = new Set(dirtyRows);
+    for (let r = renderedRows; r < screen.length; r++) needRebuild.add(r);
+    if (cursorVisible) needRebuild.add(cursor.row);
+    if (lastCursorRow >= 0) needRebuild.add(lastCursorRow);
+
+    for (const r of needRebuild) {
+      if (r < 0 || r >= screen.length) continue;
+      const isCursorLine = r === cursor.row && cursorVisible;
+      const lineEl = buildLineElement(screen[r], isCursorLine);
+
+      if (r >= renderedRows || !rowNodes[r]) {
+        // 新行或节点缺失：追加到末尾，并记录节点
+        terminal.appendChild(lineEl);
+        rowNodes[r] = lineEl;
+      } else {
+        // 已有行：用记录的节点做替换，避免索引错位
+        terminal.replaceChild(lineEl, rowNodes[r]);
+        rowNodes[r] = lineEl;
+      }
+    }
+    dirtyRows.clear();
+    lastCursorRow = cursorVisible ? cursor.row : -1;
+
+    renderedRows = screen.length;
+    // 行被裁剪时同步收缩节点表
+    if (rowNodes.length > screen.length) rowNodes.length = screen.length;
+
+    // 仅在用户本来就在底部时才跟随滚动
+    if (autoScroll && wasAtBottom) {
+      terminal.scrollTop = terminal.scrollHeight;
+    }
+  }
+
+  /** 构建一行的 DOM 元素（合并同样式的连续字符） */
+  function buildLineElement(line, isCursorLine) {
+    const el = document.createElement("span");
+    el.className = "term-line";
+
+    let i = 0;
+    while (i < line.cells.length) {
+      const st = line.cells[i];
+      let text = st.ch;
+      let j = i + 1;
+      while (
+        j < line.cells.length &&
+        line.cells[j].cls === st.cls &&
+        line.cells[j].style === st.style &&
+        // 光标位置要单独处理，避免被合并进大 span
+        !(isCursorLine && j === cursor.col)
+      ) {
+        text += line.cells[j].ch;
+        j++;
+      }
+
+      // 光标所在位置：先插入一个空的光标插入符，再正常输出该字符
+      if (isCursorLine && i === cursor.col) {
+        el.appendChild(makeCursorEl());
+      }
+
+      const span = document.createElement("span");
+      if (st.cls) span.className = st.cls;
+      if (st.style) span.setAttribute("style", st.style);
+      span.textContent = text;
+      el.appendChild(span);
+      i = j;
+    }
+
+    // 光标在行尾（超出已有字符）时，在末尾补一个插入符
+    if (isCursorLine && cursor.col >= line.cells.length) {
+      el.appendChild(makeCursorEl());
+    }
+
+    // 每行都附加换行符。
+    // 不能按「是否最后一行」决定：某行渲染时是最后一行（无换行符），
+    // 之后新行追加，它就不再是最后一行，但不会被标脏重建，
+    // 于是永远缺换行符，导致两行内容挤在一起。
+    // 末尾多一个换行符在 white-space: pre-wrap 下不会产生多余空行。
+    el.appendChild(document.createTextNode("\n"));
+    return el;
+  }
+
+  function makeCursorEl() {
+    const cur = document.createElement("span");
+    cur.className = "cursor" + (cursorFocused ? " focused" : "");
+    return cur;
+  }
+
+  /** 入队一段文本：写入行缓冲，由下一帧统一渲染 */
+  function termWrite(text, cls) {
+    if (!text) return;
+    // 显式指定 cls 时（系统消息、错误等）临时切换样式
+    const saved = currentCls;
+    if (cls !== undefined) currentCls = cls;
+    writeText(text);
+    currentCls = saved;
+    dirty = true;
+    scheduleFlush();
+  }
+
+  function termWriteLine(text, cls) {
+    termWrite(text + "\n", cls);
+  }
+
+  /** 接收数据渲染：文本模式直接输出，HEX 模式输出十六进制 */
+  function renderRx(bytes) {
+    // 记录原始字节，供导出使用（不受 DOM 裁剪影响）
+    captureBytes(bytes);
+
+    if (state.viewMode === "hex") {
+      // HEX 模式：累积到完整的 16 字节行再输出，避免行被拆包切断
+      hexRowBuf.push(...bytes);
+      let out = "";
+      while (hexRowBuf.length >= HEX_ROW) {
+        out += formatHexRow(hexRowBuf.splice(0, HEX_ROW));
+      }
+      if (out) termWrite(out);
+    } else {
+      // 增量解码，保留跨包的多字节字符
+      const text = utf8Decoder.decode(bytes, { stream: true });
+      captureText(text);
+      feedAnsi(text);
+    }
+  }
+
+  const HEX_ROW = 16;      // 每行字节数
+  let hexRowBuf = [];      // HEX 模式下未凑满一行的残留字节
+
+  /** 把一行（至多 16 字节）格式化为 HEX + ASCII 对照 */
+  function formatHexRow(row) {
+    const hex = [];
+    let ascii = "";
+    for (const b of row) {
+      hex.push(b.toString(16).padStart(2, "0"));
+      ascii += b >= 0x20 && b < 0x7F ? String.fromCharCode(b) : ".";
+    }
+    // 补齐到 16 列，保持 ASCII 列对齐
+    const pad = "   ".repeat(HEX_ROW - row.length);
+    return hex.join(" ") + pad + "  |" + ascii + "|\n";
+  }
+
+  /** 把 HEX 模式下未满一行的残留字节冲刷出去（切换模式/清屏时调用） */
+  function flushHexRows() {
+    if (hexRowBuf.length > 0) {
+      termWrite(formatHexRow(hexRowBuf));
+      hexRowBuf = [];
+    }
+  }
+
+  // ---------- ANSI 转义序列处理 ----------
+  // 设备（如 Linux shell）会发送 CSI 序列控制光标与颜色。
+  // 控制字符（\r \n \b \t）由 writeText 直接处理；这里只解析 ESC 序列。
+
+  let ansiBuf = "";        // 跨包残留的未完成转义序列
+
+  function feedAnsi(text) {
+    const data = ansiBuf + text;
+    ansiBuf = "";
+    let i = 0;
+    let plainStart = 0;
+
+    const flushPlain = (end) => {
+      if (end > plainStart) writeText(data.slice(plainStart, end));
+    };
+
+    while (i < data.length) {
+      // 转义序列起始
+      if (data[i] === "\x1b") {
+        flushPlain(i);
+        const next = data[i + 1];
+        if (next === undefined) {
+          // 序列被拆包，缓存到下一批
+          ansiBuf = data.slice(i);
+          return;
+        }
+        if (next === "[") {
+          // CSI：ESC [ 参数 终止符
+          // 参数可包含数字、分号、冒号（256 色/真彩色）与 ? < > 等私有前缀
+          const m = /^\x1b\[([0-9;:?<=>]*)([A-Za-z@`~])/.exec(data.slice(i));
+          if (!m) {
+            // 序列不完整，等待后续数据
+            ansiBuf = data.slice(i);
+            return;
+          }
+          handleCsi(m[1], m[2]);
+          i += m[0].length;
+          plainStart = i;
+          continue;
+        }
+        if (next === "]") {
+          // OSC：ESC ] ... BEL 或 ESC \
+          const end = data.indexOf("\x07", i + 2);
+          const end2 = data.indexOf("\x1b\\", i + 2);
+          let stop = -1;
+          if (end >= 0 && (end2 < 0 || end < end2)) stop = end + 1;
+          else if (end2 >= 0) stop = end2 + 2;
+          if (stop < 0) {
+            ansiBuf = data.slice(i);
+            return;
+          }
+          i = stop;
+          plainStart = i;
+          continue;
+        }
+        // 其他双字符转义，直接跳过
+        i += 2;
+        plainStart = i;
+        continue;
+      }
+
+      i += 1;
+    }
+
+    flushPlain(data.length);
+    dirty = true;
+    scheduleFlush();
+  }
+
+  function handleCsi(params, final) {
+    // 私有模式前缀（如 ?25h 的光标显隐）
+    const isPrivate = params.startsWith("?");
+    const body = isPrivate ? params.slice(1) : params;
+    const nums = body
+      .split(";")
+      .map((p) => (p === "" ? NaN : parseInt(p, 10)));
+    const n0 = isNaN(nums[0]) ? 1 : nums[0];   // 缺省参数通常为 1
+
+    switch (final) {
+      case "m": {
+        // SGR 颜色设置
+        applySgr(params);
+        break;
+      }
+      case "J": {
+        // 清屏：0/空=光标到末尾，1=行首到光标，2/3=整屏
+        const n = isNaN(nums[0]) ? 0 : nums[0];
+        if (n === 2 || n === 3) clearScreen();
+        else if (n === 0) {
+          // 清除光标之后的内容
+          const line = screen[cursor.row];
+          if (line) line.cells.length = Math.min(line.cells.length, cursor.col);
+          screen.length = cursor.row + 1;
+        }
+        break;
+      }
+      case "K": {
+        // 清行：0/空=光标到行尾，1=行首到光标，2=整行
+        clearLine(isNaN(nums[0]) ? 0 : nums[0]);
+        break;
+      }
+      case "H":
+      case "f": {
+        // 光标定位：ESC [ row ; col H（均为 1-based）
+        const row = isNaN(nums[0]) ? 1 : nums[0];
+        const col = isNaN(nums[1]) ? 1 : nums[1];
+        moveCursor("row", row);
+        moveCursor("col", col);
+        break;
+      }
+      case "A": moveCursor("up", n0); break;
+      case "B": moveCursor("down", n0); break;
+      case "C": moveCursor("right", n0); break;
+      case "D": moveCursor("left", n0); break;
+      case "G": moveCursor("col", n0); break;
+      case "d": moveCursor("row", n0); break;
+      case "P": deleteChar(n0); break;      // 删除字符
+      case "@": insertChars(n0); break;     // 插入空位
+      case "X": {                            // 擦除字符（保留位置）
+        const line = screen[cursor.row];
+        if (line) {
+          for (let i = 0; i < n0; i++) {
+            const idx = cursor.col + i;
+            if (idx < line.cells.length) {
+              line.cells[idx] = { ch: " ", cls: null, style: null };
+            }
+          }
+          dirtyRows.add(cursor.row);
+        }
+        break;
+      }
+      case "n":
+        // 设备询问光标位置（DSR）。真实终端应回复 ESC[row;colR，
+        // 这里不回复，仅忽略，避免控制码显示为文本。
+        break;
+      case "h":
+      case "l": {
+        // 私有模式：?25 = 光标显隐，其余（如 ?7 自动换行）忽略
+        if (isPrivate && nums[0] === 25) {
+          cursorVisible = final === "h";
+        }
+        break;
+      }
+      default:
+        // 其余 CSI 序列忽略，避免作为文本显示
+        break;
+    }
+    dirty = true;
+    scheduleFlush();
+  }
+
+  /** 处理 SGR 颜色序列，更新当前输出样式 */
+  function applySgr(params) {
+    // 空参数等价于 ESC[0m（重置）
+    const raw = params === "" ? ["0"] : params.split(";");
+
+    for (let i = 0; i < raw.length; i++) {
+      // 256 色 / 真彩色：38;5;n、38;2;r;g;b 及其冒号写法 38:5:n
+      const part = raw[i];
+      const sub = part.split(":");
+      const code = sub[0] === "" ? 0 : parseInt(sub[0], 10);
+      if (isNaN(code)) continue;
+
+      // 前景色 38 / 背景色 48 需要消费后续参数
+      if (code === 38 || code === 48) {
+        const isFg = code === 38;
+        // 冒号写法（38:5:n / 38:2:r:g:b）参数在同一字段内
+        let mode, nums;
+        if (sub.length > 1) {
+          mode = parseInt(sub[1], 10);
+          nums = sub.slice(2).map((n) => parseInt(n, 10));
+        } else {
+          mode = parseInt(raw[i + 1], 10);
+          if (mode === 5) {
+            nums = [parseInt(raw[i + 2], 10)];
+            i += 2;
+          } else if (mode === 2) {
+            nums = [
+              parseInt(raw[i + 2], 10),
+              parseInt(raw[i + 3], 10),
+              parseInt(raw[i + 4], 10),
+            ];
+            i += 4;
+          } else {
+            nums = [];
+            i += 1;
+          }
+        }
+        const color = resolveColor(mode, nums);
+        if (color) {
+          if (isFg) sgr.fgRgb = color;
+          else sgr.bgRgb = color;
+        }
+        continue;
+      }
+
+      // 标准属性
+      if (code === 0) {
+        sgr.bold = sgr.dim = sgr.italic = sgr.underline = sgr.inverse = false;
+        sgr.fg = sgr.bg = null;
+        sgr.fgRgb = sgr.bgRgb = null;
+      } else if (code === 1) sgr.bold = true;
+      else if (code === 2) sgr.dim = true;
+      else if (code === 3) sgr.italic = true;
+      else if (code === 4) sgr.underline = true;
+      else if (code === 7) sgr.inverse = true;
+      else if (code === 22) sgr.bold = sgr.dim = false;
+      else if (code === 23) sgr.italic = false;
+      else if (code === 24) sgr.underline = false;
+      else if (code === 27) sgr.inverse = false;
+      else if (code >= 30 && code <= 37) {
+        sgr.fg = String(code - 30);
+        sgr.fgRgb = null;
+      } else if (code === 39) {
+        sgr.fg = null;
+        sgr.fgRgb = null;
+      } else if (code >= 40 && code <= 47) {
+        sgr.bg = String(code - 40);
+        sgr.bgRgb = null;
+      } else if (code === 49) {
+        sgr.bg = null;
+        sgr.bgRgb = null;
+      } else if (code >= 90 && code <= 97) {
+        sgr.fg = "b" + (code - 90);
+        sgr.fgRgb = null;
+      } else if (code >= 100 && code <= 107) {
+        sgr.bg = "b" + (code - 100);
+        sgr.bgRgb = null;
+      }
+    }
+    currentCls = sgrToClass();
+  }
+
+  /** 把 256 色索引或 RGB 分量解析为 CSS 颜色 */
+  function resolveColor(mode, nums) {
+    if (nums.some((n) => isNaN(n))) return null;
+    if (mode === 5 && nums.length >= 1) {
+      const n = nums[0];
+      if (n < 8) return ANSI_16[n];
+      if (n < 16) return ANSI_16_BRIGHT[n - 8];
+      if (n < 232) {
+        // 6x6x6 色立方
+        const c = n - 16;
+        const r = Math.floor(c / 36);
+        const g = Math.floor((c % 36) / 6);
+        const b = c % 6;
+        const lv = (v) => (v === 0 ? 0 : 55 + v * 40);
+        return `rgb(${lv(r)},${lv(g)},${lv(b)})`;
+      }
+      // 24 级灰阶
+      const v = 8 + (n - 232) * 10;
+      return `rgb(${v},${v},${v})`;
+    }
+    if (mode === 2 && nums.length >= 3) {
+      return `rgb(${nums[0]},${nums[1]},${nums[2]})`;
+    }
+    return null;
+  }
+
+  // 标准 16 色，供 256 色索引 0-15 使用
+  const ANSI_16 = [
+    "#4b5563", "#ef4444", "#22c55e", "#eab308",
+    "#3b82f6", "#d946ef", "#06b6d4", "#e5e7eb",
+  ];
+  const ANSI_16_BRIGHT = [
+    "#9ca3af", "#f87171", "#4ade80", "#facc15",
+    "#60a5fa", "#e879f9", "#22d3ee", "#ffffff",
+  ];
+
+  /** 把当前 SGR 属性集合转换为 CSS class 字符串 */
+  function sgrToClass() {
+    const cls = [];
+    if (sgr.bold) cls.push("ansi-bold");
+    if (sgr.dim) cls.push("ansi-dim");
+    if (sgr.italic) cls.push("ansi-italic");
+    if (sgr.underline) cls.push("ansi-underline");
+    if (sgr.inverse) cls.push("ansi-inverse");
+    if (sgr.fg !== null) cls.push("ansi-fg" + sgr.fg);
+    if (sgr.bg !== null) cls.push("ansi-bg" + sgr.bg);
+    return cls.length ? cls.join(" ") : null;
+  }
+
+  /** 生成当前样式对应的内联 style（用于 256 色/真彩色） */
+  function sgrToStyle() {
+    const parts = [];
+    if (sgr.fgRgb) parts.push(`color:${sgr.fgRgb}`);
+    if (sgr.bgRgb) parts.push(`background:${sgr.bgRgb}`);
+    return parts.length ? parts.join(";") : null;
+  }
+
+  // 当前生效的 SGR 属性
+  const sgr = {
+    bold: false,
+    dim: false,
+    italic: false,
+    underline: false,
+    inverse: false,
+    fg: null,      // null=默认色；"0".."7"=标准色；"b0".."b7"=高亮色
+    bg: null,
+    fgRgb: null,   // 256 色 / 真彩色（内联样式）
+    bgRgb: null,
+  };
+
+  let currentCls = null;
+
+  // ---------- 日志（批量追加，避免频繁强制重排） ----------
+  let logQueue = [];
+  let logScheduled = false;
+
+  function log(msg) {
+    const time = new Date().toLocaleTimeString("zh-CN", { hour12: false });
+    logQueue.push(`[${time}] ${msg}`);
+    if (logScheduled) return;
+    logScheduled = true;
+    // 与终端一样按帧批量写入，避免每条日志都触发一次布局计算
+    requestAnimationFrame(flushLog);
+  }
+
+  function flushLog() {
+    logScheduled = false;
+    if (logQueue.length === 0) return;
+    const el = $("log");
+    const wasAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    const frag = document.createDocumentFragment();
+    for (const text of logQueue) {
+      const line = document.createElement("div");
+      line.textContent = text;
+      frag.appendChild(line);
+    }
+    logQueue = [];
+    el.appendChild(frag);
+    // 裁剪历史日志
+    let excess = el.childNodes.length - 500;
+    while (excess-- > 0) el.removeChild(el.firstChild);
+    if (wasAtBottom) el.scrollTop = el.scrollHeight;
+  }
+
+  // ---------- WebSocket ----------
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${proto}//${location.host}/ws`;
+    log(`连接服务 ${url}`);
+
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      log(`创建连接失败: ${e.message}`);
+      scheduleReconnect();
+      return;
+    }
+    state.ws = ws;
+
+    ws.onopen = () => {
+      state.connected = true;
+      setWsBadge(true);
+      log("已连接到服务");
+      updateButtons();
+      send({ type: "list_ports" });
+    };
+
+    ws.onmessage = (ev) => {
+      let msg;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch (e) {
+        log(`无法解析服务消息: ${e.message}`);
+        return;
+      }
+      handleMessage(msg);
+    };
+
+    ws.onclose = () => {
+      state.connected = false;
+      setWsBadge(false);
+      setPortOpen(false, null);
+      log("与服务断开连接");
+      scheduleReconnect();
+    };
+
+    ws.onerror = () => {
+      log("WebSocket 发生错误");
+    };
+  }
+
+  function scheduleReconnect() {
+    if (state.reconnectTimer) return;
+    state.reconnectTimer = setTimeout(() => {
+      state.reconnectTimer = null;
+      connect();
+    }, 2000);
+  }
+
+  function send(obj) {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      log("未连接，无法发送指令");
+      return false;
+    }
+    state.ws.send(JSON.stringify(obj));
+    return true;
+  }
+
+  // ---------- 消息处理 ----------
+  function handleMessage(msg) {
+    switch (msg.type) {
+      case "ports": {
+        const sel = $("port-select");
+        const prev = sel.value;
+        sel.innerHTML = "";
+        if (!msg.ports || msg.ports.length === 0) {
+          const opt = document.createElement("option");
+          opt.value = "";
+          opt.textContent = "（未检测到串口）";
+          sel.appendChild(opt);
+        } else {
+          for (const p of msg.ports) {
+            const opt = document.createElement("option");
+            opt.value = p.name;
+            opt.textContent = p.label || p.name;
+            opt.title = p.detail || p.name;
+            sel.appendChild(opt);
+          }
+          if (prev && msg.ports.some((p) => p.name === prev)) sel.value = prev;
+        }
+        log(`检测到 ${msg.ports ? msg.ports.length : 0} 个串口`);
+        break;
+      }
+
+      case "status":
+        setPortOpen(msg.open, msg.port);
+        termWriteLine(`--- ${msg.message} ---`, "sys");
+        log(msg.message);
+        break;
+
+      case "output": {
+        renderRx(b64ToBytes(msg.data));
+        break;
+      }
+
+      case "progress": {
+        updateProgress(msg);
+        break;
+      }
+
+      case "xmodem_done": {
+        state.sending = false;
+        updateButtons();
+        if (msg.success) {
+          termWriteLine(`*** XMODEM 传输完成 ***`, "ok");
+          log(`传输完成: ${msg.message}`);
+          $("progress-fill").style.width = "100%";
+          $("progress-text").textContent = "传输完成";
+        } else {
+          termWriteLine(`*** XMODEM 传输失败: ${msg.message} ***`, "err");
+          log(`传输失败: ${msg.message}`);
+          $("progress-text").textContent = `失败: ${msg.message}`;
+        }
+        break;
+      }
+
+      case "error":
+        termWriteLine(`[错误] ${msg.message}`, "err");
+        log(`错误: ${msg.message}`);
+        break;
+
+      case "pong":
+        break;
+
+      default:
+        log(`未知消息类型: ${msg.type}`);
+    }
+  }
+
+  function updateProgress(msg) {
+    const fill = $("progress-fill");
+    const text = $("progress-text");
+
+    if (msg.stage === "packet" && msg.total_bytes > 0) {
+      const pct = Math.min(100, (msg.bytes / msg.total_bytes) * 100);
+      fill.style.width = pct.toFixed(1) + "%";
+      text.textContent =
+        `${msg.sent}/${msg.total} 包 · ${msg.bytes}/${msg.total_bytes} 字节 · ${pct.toFixed(1)}%`;
+      // 进度日志按百分比节流：每变化 2% 才记一条。
+      // 否则每个包都写日志（大文件上千条），每条都要 appendChild + 读 scrollHeight
+      // 触发强制重排，会明显拖慢界面。
+      if (pct - lastLoggedPct >= 2) {
+        lastLoggedPct = pct;
+        log(`[进度] ${msg.message}`);
+      }
+      return;
+    }
+
+    if (msg.stage === "finished") {
+      fill.style.width = "100%";
+      text.textContent = msg.message;
+    } else if (msg.stage === "retry") {
+      text.textContent = msg.message;
+    } else {
+      text.textContent = msg.message;
+    }
+    // 非 packet 阶段（握手、重传、完成）事件稀疏，全部记录
+    log(`[进度] ${msg.message}`);
+  }
+
+  let lastLoggedPct = 0;
+
+  // ---------- UI 状态 ----------
+  function setWsBadge(ok) {
+    const el = $("ws-badge");
+    el.textContent = ok ? "服务在线" : "服务离线";
+    el.className = "badge " + (ok ? "on" : "err");
+  }
+
+  function setPortOpen(open, port) {
+    state.portOpen = open;
+    state.portName = port;
+    const el = $("port-badge");
+    el.textContent = open ? `已打开 ${port}` : "串口未打开";
+    el.className = "badge " + (open ? "on" : "off");
+    $("conn-badge").textContent = open ? "串口已连接" : "未连接";
+    $("conn-badge").className = "badge " + (open ? "on" : "off");
+    updateButtons();
+  }
+
+  function updateButtons() {
+    const canOpen = state.connected && !state.portOpen;
+    const open = state.portOpen;
+    $("btn-open").disabled = !canOpen;
+    $("btn-close").disabled = !open;
+    $("btn-send").disabled = !open || state.sending;
+    $("btn-cancel").disabled = !state.sending;
+    $("btn-focus").disabled = !open;
+    // 文本框模式控件
+    $("term-text").disabled = !open;
+    $("btn-send-text").disabled = !open;
+    $("btn-send-text-nl").disabled = !open;
+    $("term-hint").textContent = open
+      ? "终端已就绪：点击终端区域后直接敲键盘即可发送（逐键即时发送）"
+      : "串口未打开，终端输入不可用";
+  }
+
+  // ---------- 串口操作 ----------
+  function collectConfig() {
+    return {
+      port: $("port-select").value,
+      baud_rate: parseInt($("baud").value, 10),
+      data_bits: parseInt($("data-bits").value, 10),
+      parity: $("parity").value,
+      stop_bits: parseInt($("stop-bits").value, 10),
+      flow_control: $("flow").value,
+    };
+  }
+
+  $("btn-refresh").onclick = () => send({ type: "list_ports" });
+
+  $("btn-open").onclick = () => {
+    const cfg = collectConfig();
+    if (!cfg.port) {
+      log("请先选择串口");
+      return;
+    }
+    log(`打开串口 ${cfg.port} @ ${cfg.baud_rate}`);
+    send(Object.assign({ type: "open" }, cfg));
+  };
+
+  $("btn-close").onclick = () => {
+    log("关闭串口");
+    send({ type: "close" });
+  };
+
+  // ---------- 文件发送 ----------
+  $("btn-send").onclick = () => {
+    const fileInput = $("file-input");
+    if (!fileInput.files || fileInput.files.length === 0) {
+      log("请先选择要发送的文件");
+      return;
+    }
+    const file = fileInput.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      const bytes = new Uint8Array(reader.result);
+      const payload = {
+        type: "xmodem_send",
+        filename: file.name,
+        data: bytesToB64(bytes),
+        use_1k: $("use-1k").checked,
+        handshake_timeout_ms: Math.max(1, parseInt($("hs-timeout").value, 10) || 60) * 1000,
+        packet_timeout_ms: Math.max(100, parseInt($("pkt-timeout").value, 10) || 3000),
+      };
+      if (!send(payload)) return;
+      state.sending = true;
+      updateButtons();
+      $("progress-fill").style.width = "0%";
+      $("progress-text").textContent = "等待握手...";
+      termWriteLine(`>>> 开始发送 ${file.name} (${bytes.length} 字节)`, "tx");
+      log(`开始发送 ${file.name}，共 ${bytes.length} 字节`);
+    };
+    reader.onerror = () => log("读取文件失败");
+    reader.readAsArrayBuffer(file);
+  };
+
+  $("btn-cancel").onclick = () => {
+    send({ type: "xmodem_cancel" });
+    log("已请求取消传输");
+  };
+
+  // ---------- 终端输入 ----------
+  function sendBytes(bytes) {
+    if (!state.portOpen) return;
+    // 统一转换为 Uint8Array，兼容普通数组与 TextEncoder 输出
+    send({ type: "input", data: bytesToB64(Uint8Array.from(bytes)) });
+  }
+
+  /** 把按键事件映射为要发送的字节序列（仅终端模式使用） */
+  function keyToBytes(e) {
+    // 控制键优先：Ctrl+A..Ctrl+Z 映射为 0x01..0x1A
+    if (e.ctrlKey && !e.altKey && !e.metaKey) {
+      const k = e.key.toLowerCase();
+      if (k === "c" && !e.shiftKey) return [0x03];          // Ctrl+C -> ETX 中断
+      if (k.length === 1 && k >= "a" && k <= "z") {
+        return [k.charCodeAt(0) - 96];                       // Ctrl+A=1 ... Ctrl+Z=26
+      }
+    }
+
+    switch (e.key) {
+      case "Enter":     return lineEndingBytes().length ? lineEndingBytes() : [0x0D];
+      case "Backspace": return [0x08];                       // 退格 -> BS
+      case "Tab":       return [0x09];                       // Tab -> HT
+      case "Escape":    return [0x1B];                       // Esc -> ESC
+      case "Delete":    return [0x1B, 0x5B, 0x33, 0x7E];     // DEL -> ESC [ 3 ~
+      case "ArrowUp":   return [0x1B, 0x5B, 0x41];           // 上 -> ESC [ A
+      case "ArrowDown": return [0x1B, 0x5B, 0x42];           // 下 -> ESC [ B
+      case "ArrowRight":return [0x1B, 0x5B, 0x43];           // 右 -> ESC [ C
+      case "ArrowLeft": return [0x1B, 0x5B, 0x44];           // 左 -> ESC [ D
+      case "Home":      return [0x1B, 0x5B, 0x48];           // ESC [ H
+      case "End":       return [0x1B, 0x5B, 0x46];           // ESC [ F
+      case "PageUp":    return [0x1B, 0x5B, 0x35, 0x7E];     // ESC [ 5 ~
+      case "PageDown":  return [0x1B, 0x5B, 0x36, 0x7E];     // ESC [ 6 ~
+      default: break;
+    }
+
+    // 普通可打印字符（含中文等多字节字符）
+    if (e.key.length === 1) {
+      return Array.from(new TextEncoder().encode(e.key));
+    }
+    return null;
+  }
+
+  // 终端模式：逐键即时发送
+  terminal.addEventListener("keydown", (e) => {
+    if (!state.portOpen || state.inputMode !== "terminal") return;
+    const bytes = keyToBytes(e);
+    if (!bytes) return;
+    e.preventDefault();
+    sendBytes(bytes);
+
+    // 本地回显：仅在设备不回显时才需要。
+    // 多数串口设备（如 Linux shell）会自己回显收到的字符，
+    // 此时再本地回显就会显示两遍，因此默认关闭。
+    //
+    // 关键：关闭本地回显时，光标位置完全由设备回显流驱动，
+    // 本地绝不能自行移动光标——否则本地状态会与设备状态错位，
+    // 表现为按方向键后内容被覆盖或丢失。
+    if (!state.localEcho) return;
+
+    if (e.key.length === 1) writeText(e.key);
+    else if (e.key === "Enter") writeText("\n");
+    else if (e.key === "Backspace") backspace();
+    else if (e.key === "ArrowLeft") moveCursor("left", 1);
+    else if (e.key === "ArrowRight") moveCursor("right", 1);
+    else if (e.key === "Home") moveCursor("col", 1);
+    else if (e.key === "End") moveCursor("col", 1e9);
+    dirty = true;
+    scheduleFlush();
+  });
+
+  // 点击终端即聚焦，可直接开始敲键盘
+  terminal.addEventListener("mousedown", () => {
+    if (state.inputMode === "terminal") terminal.focus();
+  });
+  terminal.addEventListener("focus", () => {
+    terminal.classList.add("active");
+    cursorFocused = true;
+    dirty = true;
+    scheduleFlush();
+  });
+  terminal.addEventListener("blur", () => {
+    terminal.classList.remove("active");
+    cursorFocused = false;
+    dirty = true;
+    scheduleFlush();
+  });
+
+  // 用户手动向上滚动时暂停自动滚动
+  terminal.addEventListener("scroll", () => {
+    autoScroll =
+      terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 40;
+  });
+
+  $("btn-focus").onclick = () => terminal.focus();
+
+  // ---------- 文本框模式：整段输入后发送 ----------
+
+  /**
+   * 发送文本框内容。
+   * `appendLineEnding` 为 true 时在末尾追加行尾字符。
+   */
+  function sendFromTextbox(appendLineEnding) {
+    if (!state.portOpen) return;
+    const raw = $("term-text").value;
+    if (raw === "") return;
+
+    let bytes;
+    if (state.txMode === "hex") {
+      const parsed = parseHex(raw);
+      if (parsed.error) {
+        termWriteLine(`[错误] ${parsed.error}`, "err");
+        log(`HEX 解析失败: ${parsed.error}`);
+        return;
+      }
+      bytes = parsed.bytes;
+    } else {
+      bytes = Array.from(new TextEncoder().encode(raw));
+    }
+
+    if (appendLineEnding) bytes = bytes.concat(lineEndingBytes());
+    if (bytes.length === 0) return;
+
+    sendBytes(bytes);
+    // 发送指示：HEX 模式下始终显示实际发出的字节，便于核对；
+    // 文本模式下受「本地回显」开关控制（设备已回显时无需重复显示）。
+    if (state.txMode === "hex") {
+      termWriteLine(`>>> ${formatHex(bytes)}`, "tx");
+    } else if (state.localEcho) {
+      termWriteLine(raw, "tx");
+    }
+    $("term-text").value = "";
+  }
+
+  $("btn-send-text").onclick = () => sendFromTextbox(false);
+  $("btn-send-text-nl").onclick = () => sendFromTextbox(true);
+
+  $("term-text").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      // Shift+Enter 不追加行尾，便于发送纯数据
+      sendFromTextbox(!e.shiftKey);
+    }
+  });
+
+  // ---------- 工具栏：模式与选项 ----------
+
+  $("input-mode").onchange = (e) => {
+    state.inputMode = e.target.value;
+    applyInputMode();
+    log(`输入模式：${state.inputMode === "terminal" ? "终端（逐键）" : "文本框"}`);
+  };
+
+  $("view-mode").onchange = (e) => {
+    // 切换前先把未满一行的 HEX 残留输出，避免数据丢失
+    flushHexRows();
+    state.viewMode = e.target.value;
+    log(`显示模式：${state.viewMode === "hex" ? "HEX" : "文本"}`);
+  };
+
+  $("tx-mode").onchange = (e) => {
+    state.txMode = e.target.value;
+    const hint = $("term-text");
+    hint.placeholder =
+      state.txMode === "hex"
+        ? "输入十六进制，如：AA 01 FF 或 0xAA,0x01"
+        : "输入要发送的内容，回车发送（Shift+回车不追加行尾）";
+    log(`发送模式：${state.txMode === "hex" ? "HEX" : "文本"}`);
+  };
+
+  $("opt-timestamp").onchange = (e) => {
+    state.timestamp = e.target.checked;
+    log(`时间戳已${state.timestamp ? "开启" : "关闭"}`);
+  };
+
+  $("opt-echo").onchange = (e) => {
+    state.localEcho = e.target.checked;
+    log(
+      state.localEcho
+        ? "本地回显已开启（若设备也回显，字符会显示两遍）"
+        : "本地回显已关闭（依赖设备回显）"
+    );
+  };
+
+  $("line-ending").onchange = (e) => {
+    state.lineEnding = e.target.value;
+    const names = { cr: "CR (\\r)", lf: "LF (\\n)", crlf: "CRLF (\\r\\n)", none: "无" };
+    log(`行尾设置为 ${names[state.lineEnding]}`);
+  };
+
+  /** 根据输入模式切换底部输入区 */
+  function applyInputMode() {
+    const isTerminal = state.inputMode === "terminal";
+    $("pane-terminal").style.display = isTerminal ? "" : "none";
+    $("pane-textbox").style.display = isTerminal ? "none" : "";
+    if (isTerminal) terminal.focus();
+    else $("term-text").focus();
+    updateButtons();
+  }
+
+  $("btn-clear").onclick = () => {
+    clearScreen();
+    hexRowBuf = [];
+    ansiBuf = "";
+    utf8Decoder.decode(); // 重置增量解码器状态
+    resetCapture();       // 清屏同时清空导出记录
+    dirty = true;
+    scheduleFlush();
+    log("终端已清屏，导出记录已重置");
+  };
+
+  /** 触发浏览器下载 */
+  function download(filename, blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // 稍后释放，确保下载已开始
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /** 生成带时间戳的文件名 */
+  function exportFilename(ext) {
+    const d = new Date();
+    const p = (n) => String(n).padStart(2, "0");
+    return (
+      `serial-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+      `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`
+    );
+  }
+
+  /** 导出接收到的数据，支持文本 / HEX / 原始二进制三种格式 */
+  $("btn-save").onclick = () => {
+    if (capture.totalBytes === 0) {
+      log("尚未接收到数据，无可导出内容");
+      return;
+    }
+    const format = $("export-format").value;
+
+    if (format === "binary") {
+      const bytes = captureAllBytes();
+      download(exportFilename("bin"), new Blob([bytes], { type: "application/octet-stream" }));
+      log(`已导出原始数据 ${bytes.length} 字节`);
+      return;
+    }
+
+    const text = format === "hexdump" ? captureAsHexDump() : captureAsText();
+    download(
+      exportFilename(format === "hexdump" ? "hex" : "log"),
+      new Blob([text], { type: "text/plain;charset=utf-8" })
+    );
+    log(
+      `已导出${format === "hexdump" ? " HEX" : "文本"} ${capture.totalBytes} 字节` +
+        `（${capture.lines.length} 行）`
+    );
+  };
+
+  // ---------- 启动 ----------
+  setPortOpen(false, null);
+  applyInputMode();
+  updateButtons();
+  connect();
+})();
+</script>
+</body>
+</html>
