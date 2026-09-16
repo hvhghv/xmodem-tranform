@@ -113,13 +113,14 @@ jobs:
       # 交叉编译：安装交叉编译器，并准备目标架构的 libudev sysroot。
       # 做法是从 Ubuntu 仓库下载目标架构的 deb 包并解压到独立 sysroot，
       # 再用 PKG_CONFIG_* 变量让 pkg-config 在其中查找 libudev。
+      #
+      # 注意：apt-get download pkg:<arch> 要求该外部架构已通过
+      # dpkg --add-architecture 注册，否则报 "Unable to locate package"。
       - name: 安装构建依赖（交叉）
         if: ${{ !matrix.native }}
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y pkg-config ${{ matrix.apt }}
 
           if [ '${{ matrix.libudev }}' = 'true' ]; then
             # 架构名到 Ubuntu deb 架构的映射
@@ -128,7 +129,14 @@ jobs:
               riscv64) deb_arch=riscv64 ;;
               *)       echo "未配置的架构: ${{ matrix.arch }}"; exit 1 ;;
             esac
+            # 必须先注册外部架构，apt 才能找到并下载该架构的包
+            sudo dpkg --add-architecture "$deb_arch"
+          fi
 
+          sudo apt-get update
+          sudo apt-get install -y pkg-config ${{ matrix.apt }}
+
+          if [ '${{ matrix.libudev }}' = 'true' ]; then
             sysroot="$PWD/.sysroot/${{ matrix.arch }}"
             mkdir -p "$sysroot"
             cd "$sysroot"
@@ -145,6 +153,26 @@ jobs:
             echo "已准备 $deb_arch sysroot: $sysroot"
             find "$sysroot" -name 'libudev*' | head -20
           fi
+
+      # 交叉编译必须显式指定目标链接器，否则 Cargo 会退回宿主的 cc，
+      # 导致 "incompatible with elf64-x86-64" 之类的链接错误。
+      - name: 配置链接器（交叉）
+        if: ${{ !matrix.native }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          target_upper="$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')"
+          # matrix.apt 形如 gcc-arm-linux-gnueabihf，去掉 gcc- 前缀即为工具链前缀
+          apt_pkg='${{ matrix.apt }}'
+          cc_prefix="${apt_pkg#gcc-}"
+          linker="${cc_prefix}-gcc"
+          command -v "$linker" >/dev/null 2>&1 || {
+            echo "::error::未找到交叉链接器 $linker"
+            exit 1
+          }
+          echo "CARGO_TARGET_${target_upper}_LINKER=$linker" >> "$GITHUB_ENV"
+          echo "链接器: $linker"
 
       - name: 运行测试（仅原生目标）
         # 交叉编译产物无法在当前 runner 上执行，测试已在 x64/arm64 原生通过。
@@ -250,24 +278,17 @@ jobs:
         with:
           key: linux-musl-${{ matrix.arch }}-${{ matrix.linkage }}
 
-      # 原生 musl 构建需要 musl 工具链提供链接器
-      - name: 安装 musl 工具链（原生）
-        if: matrix.native
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-
-      # 交叉编译使用 hvhghv/cross-software 的 v15.1.0-musl-gcc release。
+      # musl 工具链统一使用 hvhghv/cross-software 的 v15.1.0-musl-gcc release。
       # 资产命名：musl-toolchain-{arch}-{variant}.tar.gz
       #   arch:    arm | riscv64 | aarch64 | x86_64
       #   variant: lto-nodebug（启用 LTO）| nodebug | debug
       # 压缩包内第一级目录为 musl-toolchain-{arch}-{variant}，结构示例：
       #   musl-toolchain-arm-lto-nodebug/bin/arm-linux-musleabi-gcc
-      #   musl-toolchain-riscv64-lto-nodebug/bin/riscv64-linux-musl-gcc
-      - name: 安装 musl 交叉工具链
-        if: ${{ !matrix.native }}
+      #   musl-toolchain-x86_64-lto-nodebug/bin/x86_64-linux-musl-gcc
+      #
+      # 原生目标也使用它而非 apt 的 musl-tools：后者只支持静态链接，
+      # 动态链接会报 "cannot find libgcc_s.so.1"。
+      - name: 安装 musl 工具链
         shell: bash
         run: |
           set -euo pipefail
@@ -277,6 +298,8 @@ jobs:
 
           # 架构名到工具链资产名与编译器前缀的映射
           case '${{ matrix.arch }}' in
+            x64)     pkg_arch=x86_64  ; cc_prefix=x86_64-linux-musl ;;
+            arm64)   pkg_arch=aarch64 ; cc_prefix=aarch64-linux-musl ;;
             arm)     pkg_arch=arm     ; cc_prefix=arm-linux-musleabi ;;
             riscv64) pkg_arch=riscv64 ; cc_prefix=riscv64-linux-musl ;;
             *)       echo "未配置的架构: ${{ matrix.arch }}"; exit 1 ;;
@@ -309,16 +332,10 @@ jobs:
           set -euo pipefail
 
           target_upper="$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')"
-
-          if [ '${{ matrix.native }}' = 'true' ]; then
-            # 原生：直接用 apt 安装的 musl-gcc
-            echo "CARGO_TARGET_${target_upper}_LINKER=musl-gcc" >> "$GITHUB_ENV"
-          else
-            # 交叉：工具链的编译器已按目标 ABI 配置好（arm 为 soft-float），
-            # 无需额外传 -mfloat-abi。
-            echo "CARGO_TARGET_${target_upper}_LINKER=$MUSL_CC" >> "$GITHUB_ENV"
-            echo "链接器: $MUSL_CC"
-          fi
+          # 工具链的编译器已按目标 ABI 配置好（arm 为 soft-float），
+          # 无需额外传 -mfloat-abi。
+          echo "CARGO_TARGET_${target_upper}_LINKER=$MUSL_CC" >> "$GITHUB_ENV"
+          echo "链接器: $MUSL_CC"
 
       - name: 运行测试（仅原生目标）
         if: matrix.native
