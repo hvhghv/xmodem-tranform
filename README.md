@@ -50,7 +50,7 @@
 - **行尾可选**：CR / LF / CRLF / 无
 - **数据导出**：把接收到的全部数据导出为文本 / HEX / 原始二进制
 - **10 套界面主题**：6 套深/浅色 + 4 套清新配色，选择后自动记忆（见下文）
-- **11 款开源终端字体**：JetBrains Mono / Fira Code / Cascadia Code 等，全部内嵌，离线可用（见下文）
+- **11 款内置开源终端字体** + **13 款系统字体**：两个维度互相隔离，可自由组合（见下文）
 - **完整 ANSI 颜色支持**（见下文）
 - **实时进度**：显示包序号、字节数、百分比与重传提示
 - **可取消传输**：任意时刻中止发送，并向对端发送 CAN 序列
@@ -205,11 +205,15 @@ static/
 
 ### 终端字体
 
-界面右上角可切换终端字体，选择同样写入 `localStorage` 自动记忆。
+界面右上角有**两个互相隔离**的字体选择器，选择均写入 `localStorage` 自动记忆。
+
+#### 内置字体（随程序分发，离线可用）
+
+通过 `GET /fonts/<name>.woff2` 提供，**完全离线可用**——本工具面向嵌入式设备场景，
+不能依赖 CDN。字体文件位于 `static/fonts/`，由 `src/web.rs` 用 `include_bytes!` 嵌入。
 
 | 字体 | 许可 | 特点 |
 | --- | --- | --- |
-| 系统默认 | — | 沿用 `Cascadia Mono` / `Consolas` / `Menlo` 等系统等宽字体 |
 | JetBrains Mono | SIL OFL 1.1 | 专为代码设计，字形偏圆润 |
 | Fira Code | SIL OFL 1.1 | Mozilla 出品，编程连字最丰富 |
 | Cascadia Code | SIL OFL 1.1 | 微软出品，Windows Terminal 默认字体 |
@@ -222,15 +226,44 @@ static/
 | Roboto Mono | Apache-2.0 | Google 出品，Android 生态常见 |
 | Cousine | Apache-2.0 | 与 Courier New 度量兼容 |
 
-**全部字体内嵌在二进制中**，通过 `GET /fonts/<name>.woff2` 提供，
-因此**完全离线可用**——本工具面向嵌入式设备场景，不能依赖 CDN。
-
-字体文件位于 `static/fonts/`，由 `src/web.rs` 用 `include_bytes!` 嵌入。
 11 款字体合计约 289 KB，二进制体积因此增加约 0.32 MB。
+
+#### 系统字体（使用本机已安装的字体）
+
+| 字体 | 平台 |
+| --- | --- |
+| Consolas / Cascadia Mono / Courier New / Lucida Console | Windows |
+| Menlo / Monaco / SF Mono | macOS |
+| DejaVu Sans Mono / Liberation Mono / Noto Sans Mono | Linux |
+| Source Han Mono SC / Sarasa Mono SC / Microsoft YaHei Mono | 中文等宽 |
+
+程序会**自动检测本机是否安装**，未安装的选项置灰并标注「（未安装）」，
+避免选了却看不到效果。检测方式是用 canvas 测量文本宽度：
+`"字体名", monospace` 与纯 `monospace` 宽度不同即说明字体生效。
+
+> 基准宽度必须用**相同的回退链**（monospace）来测。早期版本拿
+> `monospace` / `sans-serif` / `serif` 三个族当基准，结果不存在的字体
+> 回退到 `monospace` 后宽度与 `sans-serif` 不同，被误判为「已安装」
+> ——已用假字体名实测确认并修正。
+
+#### 两个维度的隔离
+
+两个选择器**各自独立**，互不引用：
+
+- 内置字体槽只写 `"XxxTool"`（`@font-face` 家族名）
+- 系统字体槽只写本机字体名
+
+因此切换其一不会影响另一，两者可自由组合（内置优先，系统作为回退）。
+最终栈为 `内置 -> 系统 -> 通用等宽回退`。
+
+> **实现陷阱**：CSS 变量为空时 `var()` 会替换出空槽位，使整条
+> `font-family` 声明失效，最终继承 body 的非等宽字体。
+> 因此两槽的默认值必须**非空**（都指向 `--mono`），否则拼接出的列表非法。
 
 > **连字默认关闭**：Fira Code、JetBrains Mono、Cascadia Code 等含编程连字，
 > 会把 `->` `!=` `<=` 合并成单个字形。终端必须保证「一个字符 = 一个等宽格」，
 > 连字会破坏列对齐，因此统一设置 `font-variant-ligatures: none`。
+> 系统字体同样处理，因为用户可能选了带连字的系统字体。
 
 字体只作用于等宽区域（终端、日志、输入框、进度文本），界面其余部分仍用系统 UI 字体。
 

@@ -19,6 +19,10 @@
       if (f) {
         document.documentElement.setAttribute("data-font", f);
       }
+      var sf = localStorage.getItem("xmodem.sysfont");
+      if (sf) {
+        document.documentElement.setAttribute("data-font-sys", sf);
+      }
     } catch (e) { /* localStorage 不可用时忽略 */ }
   })();
 </script>
@@ -98,7 +102,8 @@
     --warn: #f59e0b;
     --error: #ef4444;
     --mono: "Cascadia Mono", "Consolas", "Menlo", monospace;
-    /* 终端字体栈，由 <html data-font="..."> 覆盖；默认沿用系统等宽字体 */
+    /* 终端字体栈的默认值（未选任何字体时）。
+       两个槽变量在下面的「终端字体」小节中定义与覆盖。 */
     --term-font: var(--mono);
 
     /* 按钮主色上的文字颜色（浅色主题需要改成深色） */
@@ -646,25 +651,67 @@
 
   /* ==========================================================================
      终端字体
-     通过 <html data-font="..."> 切换，只影响等宽区域（终端、日志、输入框）。
-     每套字体都带系统回退链，即使 Web 字体加载失败也不会退化成非等宽。
+     分两个**互相隔离**的维度，分别由不同属性控制：
+
+       <html data-font="...">     内置字体（内嵌 woff2，离线可用）
+       <html data-font-sys="..."> 系统字体（本机已安装的字体名）
+
+     隔离方式：两个属性各自只写自己那一槽的值，互不引用。
+     内置字体槽只写 "XxxTool"（@font-face 家族名），
+     系统字体槽只写本机字体名，因此切换其一不影响另一。
+
+     实现要点（踩过的坑）：
+       CSS 变量为空时，var() 会替换出空槽位，使整条 font-family 声明失效，
+       最终继承 body 的非等宽字体。所以两槽的默认值必须是**非空**的
+       （这里都指向 --mono），否则拼接出的列表非法。
+       重复的回退项无害：浏览器按顺序取第一个可用的即可。
      ========================================================================== */
-  html[data-font="jetbrains-mono"] { --term-font: "JBMonoTool", "JetBrains Mono", var(--mono); }
-  html[data-font="fira-code"]      { --term-font: "FiraCodeTool", "Fira Code", var(--mono); }
-  html[data-font="cascadia-code"]  { --term-font: "CascadiaTool", "Cascadia Code", var(--mono); }
-  html[data-font="source-code-pro"]{ --term-font: "SourceCodeProTool", "Source Code Pro", var(--mono); }
-  html[data-font="ibm-plex-mono"]  { --term-font: "IBMPlexMonoTool", "IBM Plex Mono", var(--mono); }
-  html[data-font="hack"]           { --term-font: "HackTool", "Hack", var(--mono); }
-  html[data-font="inconsolata"]    { --term-font: "InconsolataTool", "Inconsolata", var(--mono); }
-  html[data-font="ubuntu-mono"]    { --term-font: "UbuntuMonoTool", "Ubuntu Mono", var(--mono); }
-  html[data-font="space-mono"]     { --term-font: "SpaceMonoTool", "Space Mono", var(--mono); }
-  html[data-font="roboto-mono"]    { --term-font: "RobotoMonoTool", "Roboto Mono", var(--mono); }
-  html[data-font="cousine"]        { --term-font: "CousineTool", "Cousine", var(--mono); }
+  :root {
+    /* 两个槽的默认值都指向通用等宽回退，保证永远非空 */
+    --font-slot-builtin: var(--mono);
+    --font-slot-system: var(--mono);
+    --term-font: var(--font-slot-builtin), var(--font-slot-system), var(--mono);
+  }
+
+  /* ---- 内置字体槽（内嵌 woff2）---- */
+  html[data-font="jetbrains-mono"]  { --font-slot-builtin: "JBMonoTool"; }
+  html[data-font="fira-code"]       { --font-slot-builtin: "FiraCodeTool"; }
+  html[data-font="cascadia-code"]   { --font-slot-builtin: "CascadiaTool"; }
+  html[data-font="source-code-pro"] { --font-slot-builtin: "SourceCodeProTool"; }
+  html[data-font="ibm-plex-mono"]   { --font-slot-builtin: "IBMPlexMonoTool"; }
+  html[data-font="hack"]            { --font-slot-builtin: "HackTool"; }
+  html[data-font="inconsolata"]     { --font-slot-builtin: "InconsolataTool"; }
+  html[data-font="ubuntu-mono"]     { --font-slot-builtin: "UbuntuMonoTool"; }
+  html[data-font="space-mono"]      { --font-slot-builtin: "SpaceMonoTool"; }
+  html[data-font="roboto-mono"]     { --font-slot-builtin: "RobotoMonoTool"; }
+  html[data-font="cousine"]         { --font-slot-builtin: "CousineTool"; }
+
+  /* ---- 系统字体槽（本机已安装）---- */
+  /* 这些字体不随程序分发，仅在用户本机存在时才生效。
+     属性名用 data-font-sys 而非 data-sysfont，与内置维度明确区分开。 */
+  html[data-font-sys="consolas"]         { --font-slot-system: "Consolas"; }
+  html[data-font-sys="cascadia-mono"]    { --font-slot-system: "Cascadia Mono"; }
+  html[data-font-sys="courier-new"]      { --font-slot-system: "Courier New"; }
+  html[data-font-sys="lucida-console"]   { --font-slot-system: "Lucida Console"; }
+  html[data-font-sys="menlo"]            { --font-slot-system: "Menlo"; }
+  html[data-font-sys="monaco"]           { --font-slot-system: "Monaco"; }
+  html[data-font-sys="sf-mono"]          { --font-slot-system: "SF Mono"; }
+  html[data-font-sys="dejavu-sans-mono"] { --font-slot-system: "DejaVu Sans Mono"; }
+  html[data-font-sys="liberation-mono"]  { --font-slot-system: "Liberation Mono"; }
+  html[data-font-sys="noto-sans-mono"]   { --font-slot-system: "Noto Sans Mono"; }
+  html[data-font-sys="source-han-mono"]  { --font-slot-system: "Source Han Mono SC"; }
+  html[data-font-sys="sarasa-mono"]      { --font-slot-system: "Sarasa Mono SC"; }
+  html[data-font-sys="msyh-mono"]        { --font-slot-system: "Microsoft YaHei Mono"; }
+
   /* 连字类字体（Fira Code / JetBrains Mono / Cascadia）默认关闭连字，
-     避免 `->` `!=` `<=` 等被合并成单个字形，导致终端列宽与实际字符数不符。 */
+     避免 `->` `!=` `<=` 等被合并成单个字形，导致终端列宽与实际字符数不符。
+     系统字体同样处理，因为用户可能选了带连字的系统字体。 */
   html[data-font] #terminal,
   html[data-font] .term-input,
-  html[data-font] .log {
+  html[data-font] .log,
+  html[data-font-sys] #terminal,
+  html[data-font-sys] .term-input,
+  html[data-font-sys] .log {
     font-variant-ligatures: none;
     font-feature-settings: "liga" 0, "calt" 0;
   }
@@ -721,6 +768,9 @@
   }
   /* 字体选择器用等宽字体预览，方便对比字形 */
   #font-select { font-family: var(--term-font); }
+  #sysfont-select { font-family: var(--term-font); }
+  /* 本机未安装的系统字体置灰，避免误选后看不到效果 */
+  #sysfont-select option[data-available="0"] { color: var(--muted); }
 
   main {
     flex: 1;
@@ -1008,10 +1058,10 @@
       <option value="citrus">柠檬</option>
     </select>
   </label>
-  <label class="picker" title="切换终端字体（内嵌开源字体，离线可用）">
-    <span>字体</span>
+  <label class="picker" title="内置字体：随程序分发，离线可用">
+    <span>内置字体</span>
     <select id="font-select">
-      <option value="system">系统默认</option>
+      <option value="none">不使用</option>
       <option value="jetbrains-mono">JetBrains Mono</option>
       <option value="fira-code">Fira Code</option>
       <option value="cascadia-code">Cascadia Code</option>
@@ -1023,6 +1073,25 @@
       <option value="space-mono">Space Mono</option>
       <option value="roboto-mono">Roboto Mono</option>
       <option value="cousine">Cousine</option>
+    </select>
+  </label>
+  <label class="picker" title="系统字体：使用本机已安装的字体，未安装则不生效">
+    <span>系统字体</span>
+    <select id="sysfont-select">
+      <option value="none">不使用</option>
+      <option value="consolas">Consolas</option>
+      <option value="cascadia-mono">Cascadia Mono</option>
+      <option value="courier-new">Courier New</option>
+      <option value="lucida-console">Lucida Console</option>
+      <option value="menlo">Menlo</option>
+      <option value="monaco">Monaco</option>
+      <option value="sf-mono">SF Mono</option>
+      <option value="dejavu-sans-mono">DejaVu Sans Mono</option>
+      <option value="liberation-mono">Liberation Mono</option>
+      <option value="noto-sans-mono">Noto Sans Mono</option>
+      <option value="source-han-mono">Source Han Mono SC</option>
+      <option value="sarasa-mono">Sarasa Mono SC</option>
+      <option value="msyh-mono">Microsoft YaHei Mono</option>
     </select>
   </label>
   <span id="ws-badge" class="badge err">服务离线</span>
@@ -1259,46 +1328,151 @@
   }
 
   // ---------- 终端字体 ----------
-  // 需与 <select id="font-select"> 中的 value 保持一致。
-  // "system" 表示不设置 data-font 属性，沿用系统等宽字体。
-  const FONTS = [
-    "system",
-    "jetbrains-mono", "fira-code", "cascadia-code", "source-code-pro",
-    "ibm-plex-mono", "hack", "inconsolata", "ubuntu-mono",
-    "space-mono", "roboto-mono", "cousine",
-  ];
+  // 两个**互相隔离**的维度，分别对应两个下拉框：
+  //   BUILTIN_FONTS 内置字体（内嵌 woff2，随程序分发，离线可用）
+  //   SYSTEM_FONTS  系统字体（本机已安装，未安装则不生效）
+  // 两者各自独立成栈，切换其一不影响另一，见 CSS 中 --term-font 的组装。
+  // 值需与 <select id="font-select"> / <select id="sysfont-select"> 保持一致。
+
+  /** 内置字体：value -> 用于界面预览的 CSS font-family */
+  const BUILTIN_FONTS = {
+    "none": null,
+    "jetbrains-mono": "JBMonoTool",
+    "fira-code": "FiraCodeTool",
+    "cascadia-code": "CascadiaTool",
+    "source-code-pro": "SourceCodeProTool",
+    "ibm-plex-mono": "IBMPlexMonoTool",
+    "hack": "HackTool",
+    "inconsolata": "InconsolataTool",
+    "ubuntu-mono": "UbuntuMonoTool",
+    "space-mono": "SpaceMonoTool",
+    "roboto-mono": "RobotoMonoTool",
+    "cousine": "CousineTool",
+  };
+
+  /** 系统字体：value -> 本机字体名（可能未安装） */
+  const SYSTEM_FONTS = {
+    "none": null,
+    "consolas": "Consolas",
+    "cascadia-mono": "Cascadia Mono",
+    "courier-new": "Courier New",
+    "lucida-console": "Lucida Console",
+    "menlo": "Menlo",
+    "monaco": "Monaco",
+    "sf-mono": "SF Mono",
+    "dejavu-sans-mono": "DejaVu Sans Mono",
+    "liberation-mono": "Liberation Mono",
+    "noto-sans-mono": "Noto Sans Mono",
+    "source-han-mono": "Source Han Mono SC",
+    "sarasa-mono": "Sarasa Mono SC",
+    "msyh-mono": "Microsoft YaHei Mono",
+  };
+
   const FONT_KEY = "xmodem.font";
+  const SYSFONT_KEY = "xmodem.sysfont";
 
-  /** 读取上次选择的字体；非法值回退到 system */
-  function loadFont() {
-    let f = null;
+  /** 从 localStorage 读取一个值，非法时回退到 none */
+  function loadChoice(key, table) {
+    let v = null;
     try {
-      f = localStorage.getItem(FONT_KEY);
+      v = localStorage.getItem(key);
     } catch (e) {
-      f = null;
+      v = null;
     }
-    return FONTS.includes(f) ? f : "system";
+    return Object.prototype.hasOwnProperty.call(table, v) ? v : "none";
   }
 
-  /** 应用字体到 <html data-font="..."> */
-  function applyFont(name) {
-    const f = FONTS.includes(name) ? name : "system";
-    if (f === "system") {
-      document.documentElement.removeAttribute("data-font");
-    } else {
-      document.documentElement.setAttribute("data-font", f);
-    }
-    const sel = $("font-select");
-    if (sel && sel.value !== f) sel.value = f;
-    return f;
-  }
-
-  /** 保存字体选择 */
-  function saveFont(name) {
+  function saveChoice(key, value) {
     try {
-      localStorage.setItem(FONT_KEY, name);
+      localStorage.setItem(key, value);
     } catch (e) {
       // 忽略写入失败
+    }
+  }
+
+  /**
+   * 应用一个字体维度。
+   * @param {string} attr  要设置的属性名（data-font / data-font-sys）
+   * @param {string} selId 对应下拉框 id
+   * @param {object} table 值表
+   * @param {string} value 目标值
+   */
+  function applyChoice(attr, selId, table, value) {
+    const v = Object.prototype.hasOwnProperty.call(table, value) ? value : "none";
+    if (v === "none") {
+      document.documentElement.removeAttribute(attr);
+    } else {
+      document.documentElement.setAttribute(attr, v);
+    }
+    const sel = $(selId);
+    if (sel && sel.value !== v) sel.value = v;
+    return v;
+  }
+
+  function applyFont(name) {
+    return applyChoice("data-font", "font-select", BUILTIN_FONTS, name);
+  }
+
+  function applySysFont(name) {
+    return applyChoice("data-font-sys", "sysfont-select", SYSTEM_FONTS, name);
+  }
+
+  /**
+   * 检测系统字体是否真的可用。
+   *
+   * 原理：用 `"字体名", monospace` 测量一段文本的宽度。
+   * 若该字体不存在，浏览器会回退到 monospace，
+   * 因此只要宽度与**纯 monospace** 不同，就说明字体确实生效。
+   *
+   * 关键点：基准宽度必须用与探测**完全相同的回退链**（monospace）来测。
+   * 早期版本拿 monospace / sans-serif / serif 三个族当基准，
+   * 结果不存在的字体回退到 monospace 后，其宽度与 sans-serif 不同，
+   * 被误判为「已安装」——已用假字体名实测确认该缺陷。
+   *
+   * 这是浏览器端唯一可行的探测方式——没有 API 能枚举本地字体。
+   */
+  function isFontAvailable(family) {
+    const probe = "mmmmmmmmmmlliWWWW";
+    const size = "72px";
+    const ctx = document.createElement("canvas").getContext("2d");
+
+    const widthOf = (font) => {
+      ctx.font = `${size} ${font}`;
+      return ctx.measureText(probe).width;
+    };
+
+    const fallbackWidth = widthOf("monospace");
+    const targetWidth = widthOf(`"${family}", monospace`);
+    return Math.abs(targetWidth - fallbackWidth) > 0.5;
+  }
+
+  /**
+   * 标注本机未安装的系统字体（置灰 + 加后缀），避免用户选了却看不到效果。
+   * 已安装的保持原样；全部不可用时给出提示。
+   */
+  function markUnavailableSysFonts() {
+    const sel = $("sysfont-select");
+    if (!sel) return;
+
+    let available = 0;
+    for (const opt of sel.options) {
+      const family = SYSTEM_FONTS[opt.value];
+      if (!family) continue; // "不使用"
+
+      const ok = isFontAvailable(family);
+      if (ok) available++;
+
+      // 用 data 标记，便于样式与调试；文案只加一次
+      opt.dataset.available = ok ? "1" : "0";
+      if (!ok && !opt.textContent.endsWith("（未安装）")) {
+        opt.textContent += "（未安装）";
+      }
+      opt.title = ok ? `本机已安装：${family}` : `本机未安装：${family}`;
+    }
+
+    // 一个都没装时，提示用户该维度不可用
+    if (available === 0) {
+      sel.title = "本机未检测到列表中任何等宽字体，请改用内置字体";
     }
   }
 
@@ -2761,11 +2935,19 @@
     saveTheme(applyTheme(e.target.value));
   };
 
-  // 字体：同上
-  applyFont(loadFont());
+  // 字体：内置与系统两个维度互相隔离，各自独立应用与保存
+  applyFont(loadChoice(FONT_KEY, BUILTIN_FONTS));
   $("font-select").onchange = (e) => {
-    saveFont(applyFont(e.target.value));
+    saveChoice(FONT_KEY, applyFont(e.target.value));
   };
+
+  applySysFont(loadChoice(SYSFONT_KEY, SYSTEM_FONTS));
+  $("sysfont-select").onchange = (e) => {
+    saveChoice(SYSFONT_KEY, applySysFont(e.target.value));
+  };
+
+  // 标注本机实际可用的系统字体，未安装的置灰提示
+  markUnavailableSysFonts();
 
   setPortOpen(false, null);
   applyInputMode();
