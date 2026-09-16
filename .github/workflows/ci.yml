@@ -111,36 +111,28 @@ jobs:
           sudo apt-get install -y pkg-config libudev-dev
 
       # 交叉编译：安装交叉编译器，并准备目标架构的 libudev sysroot。
-      # 做法是从 Ubuntu 仓库下载目标架构的 deb 包并解压到独立 sysroot，
-      # 再用 PKG_CONFIG_* 变量让 pkg-config 在其中查找 libudev。
+      # 做法是从 Ubuntu ports 仓库下载目标架构的 deb 包并解压到独立
+      # sysroot，再用 PKG_CONFIG_* 变量让 pkg-config 在其中查找 libudev。
       #
-      # 两个坑：
+      # 三个坑：
       #   1. apt-get download pkg:<arch> 要求该外部架构已通过
       #      dpkg --add-architecture 注册，否则报 "Unable to locate package"。
-      #   2. 注册外部架构后，apt 会去所有已配置的源抓该架构的索引，
-      #      而 runner 上的 azure-cli / microsoft 等第三方源没有 armhf /
-      #      riscv64，会刷屏 404 甚至导致 update 失败。
-      #      因此这里用一份只含 Ubuntu 官方 archive 的临时 sourcelist。
+      #   2. armhf 与 riscv64 是 Ubuntu 的 **ports** 架构，只发布在
+      #      ports.ubuntu.com；archive.ubuntu.com 上没有它们的索引（404）。
+      #   3. 反过来 ports 源上也没有 amd64，所以不能把两类源混在一份
+      #      sourcelist 里 —— 否则两边互相 404。这里分两步：
+      #        a. host 包（pkg-config、交叉 gcc）走默认源；
+      #        b. 外部架构 deb 走单独的 ports-only 源，并用 [arch=...]
+      #           限定，只抓目标架构的索引。
       - name: 安装构建依赖（交叉）
         if: ${{ !matrix.native }}
         shell: bash
         run: |
           set -euo pipefail
 
-          # 只保留 Ubuntu 官方源，避免第三方源在外部架构上 404
-          cat > /tmp/ubuntu-only.list <<'EOF'
-          deb http://archive.ubuntu.com/ubuntu/ noble main universe
-          deb http://archive.ubuntu.com/ubuntu/ noble-updates main universe
-          deb http://security.ubuntu.com/ubuntu/ noble-security main universe
-          EOF
-          # 去掉 heredoc 的缩进
-          sed -i 's/^[[:space:]]*//' /tmp/ubuntu-only.list
-
-          APT_OPTS=(
-            -o Dir::Etc::sourcelist=/tmp/ubuntu-only.list
-            -o Dir::Etc::sourceparts=-
-            -o APT::Get::List-Cleanup=0
-          )
+          # 交叉编译器与 pkg-config 走默认源（host 架构）
+          sudo apt-get update
+          sudo apt-get install -y pkg-config ${{ matrix.apt }}
 
           if [ '${{ matrix.libudev }}' = 'true' ]; then
             # 架构名到 Ubuntu deb 架构的映射
@@ -149,21 +141,33 @@ jobs:
               riscv64) deb_arch=riscv64 ;;
               *)       echo "未配置的架构: ${{ matrix.arch }}"; exit 1 ;;
             esac
+
             # 必须先注册外部架构，apt 才能找到并下载该架构的包
             sudo dpkg --add-architecture "$deb_arch"
-          fi
 
-          sudo apt-get "${APT_OPTS[@]}" update
-          sudo apt-get "${APT_OPTS[@]}" install -y pkg-config ${{ matrix.apt }}
+            # ports-only 源，用 [arch=] 限定，避免去抓 amd64 索引而 404
+            cat > /tmp/ports-only.list <<EOF
+          deb [arch=${deb_arch}] http://ports.ubuntu.com/ubuntu-ports/ noble main universe
+          deb [arch=${deb_arch}] http://ports.ubuntu.com/ubuntu-ports/ noble-updates main universe
+          deb [arch=${deb_arch}] http://ports.ubuntu.com/ubuntu-ports/ noble-security main universe
+          EOF
+            sed -i 's/^[[:space:]]*//' /tmp/ports-only.list
 
-          if [ '${{ matrix.libudev }}' = 'true' ]; then
+            PORTS_OPTS=(
+              -o Dir::Etc::sourcelist=/tmp/ports-only.list
+              -o Dir::Etc::sourceparts=-
+              -o APT::Get::List-Cleanup=0
+            )
+
+            sudo apt-get "${PORTS_OPTS[@]}" update
+
             sysroot="$PWD/.sysroot/${{ matrix.arch }}"
             mkdir -p "$sysroot"
             cd "$sysroot"
 
             # 下载并解压 libudev 开发包与其运行时库
             for pkg in libudev-dev libudev1; do
-              apt-get "${APT_OPTS[@]}" download "$pkg:$deb_arch"
+              apt-get "${PORTS_OPTS[@]}" download "$pkg:$deb_arch"
             done
             for deb in *.deb; do
               dpkg-deb -x "$deb" "$sysroot"

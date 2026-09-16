@@ -104,19 +104,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 只保留 Ubuntu 官方源，避免第三方源在外部架构上 404
-          cat > /tmp/ubuntu-only.list <<'EOF'
-          deb http://archive.ubuntu.com/ubuntu/ noble main universe
-          deb http://archive.ubuntu.com/ubuntu/ noble-updates main universe
-          deb http://security.ubuntu.com/ubuntu/ noble-security main universe
-          EOF
-          sed -i 's/^[[:space:]]*//' /tmp/ubuntu-only.list
-
-          APT_OPTS=(
-            -o Dir::Etc::sourcelist=/tmp/ubuntu-only.list
-            -o Dir::Etc::sourceparts=-
-            -o APT::Get::List-Cleanup=0
-          )
+          # 交叉编译器与 pkg-config 走默认源（host 架构）
+          sudo apt-get update
+          sudo apt-get install -y pkg-config ${{ matrix.apt }}
 
           if [ '${{ matrix.libudev }}' = 'true' ]; then
             case '${{ matrix.arch }}' in
@@ -124,20 +114,33 @@ jobs:
               riscv64) deb_arch=riscv64 ;;
               *)       echo "未配置的架构: ${{ matrix.arch }}"; exit 1 ;;
             esac
+
             # 必须先注册外部架构，apt 才能找到并下载该架构的包
             sudo dpkg --add-architecture "$deb_arch"
-          fi
 
-          sudo apt-get "${APT_OPTS[@]}" update
-          sudo apt-get "${APT_OPTS[@]}" install -y pkg-config ${{ matrix.apt }}
+            # armhf/riscv64 是 ports 架构，只发布在 ports.ubuntu.com；
+            # 用 [arch=] 限定，避免去抓 amd64 索引而 404
+            cat > /tmp/ports-only.list <<EOF
+          deb [arch=${deb_arch}] http://ports.ubuntu.com/ubuntu-ports/ noble main universe
+          deb [arch=${deb_arch}] http://ports.ubuntu.com/ubuntu-ports/ noble-updates main universe
+          deb [arch=${deb_arch}] http://ports.ubuntu.com/ubuntu-ports/ noble-security main universe
+          EOF
+            sed -i 's/^[[:space:]]*//' /tmp/ports-only.list
 
-          if [ '${{ matrix.libudev }}' = 'true' ]; then
+            PORTS_OPTS=(
+              -o Dir::Etc::sourcelist=/tmp/ports-only.list
+              -o Dir::Etc::sourceparts=-
+              -o APT::Get::List-Cleanup=0
+            )
+
+            sudo apt-get "${PORTS_OPTS[@]}" update
+
             sysroot="$PWD/.sysroot/${{ matrix.arch }}"
             mkdir -p "$sysroot"
             cd "$sysroot"
 
             for pkg in libudev-dev libudev1; do
-              apt-get "${APT_OPTS[@]}" download "$pkg:$deb_arch"
+              apt-get "${PORTS_OPTS[@]}" download "$pkg:$deb_arch"
             done
             for deb in *.deb; do
               dpkg-deb -x "$deb" "$sysroot"
