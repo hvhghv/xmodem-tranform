@@ -104,6 +104,20 @@ jobs:
         run: |
           set -euo pipefail
 
+          # 只保留 Ubuntu 官方源，避免第三方源在外部架构上 404
+          cat > /tmp/ubuntu-only.list <<'EOF'
+          deb http://archive.ubuntu.com/ubuntu/ noble main universe
+          deb http://archive.ubuntu.com/ubuntu/ noble-updates main universe
+          deb http://security.ubuntu.com/ubuntu/ noble-security main universe
+          EOF
+          sed -i 's/^[[:space:]]*//' /tmp/ubuntu-only.list
+
+          APT_OPTS=(
+            -o Dir::Etc::sourcelist=/tmp/ubuntu-only.list
+            -o Dir::Etc::sourceparts=-
+            -o APT::Get::List-Cleanup=0
+          )
+
           if [ '${{ matrix.libudev }}' = 'true' ]; then
             case '${{ matrix.arch }}' in
               armhf)   deb_arch=armhf ;;
@@ -114,8 +128,8 @@ jobs:
             sudo dpkg --add-architecture "$deb_arch"
           fi
 
-          sudo apt-get update
-          sudo apt-get install -y pkg-config ${{ matrix.apt }}
+          sudo apt-get "${APT_OPTS[@]}" update
+          sudo apt-get "${APT_OPTS[@]}" install -y pkg-config ${{ matrix.apt }}
 
           if [ '${{ matrix.libudev }}' = 'true' ]; then
             sysroot="$PWD/.sysroot/${{ matrix.arch }}"
@@ -123,7 +137,7 @@ jobs:
             cd "$sysroot"
 
             for pkg in libudev-dev libudev1; do
-              apt-get download "$pkg:$deb_arch"
+              apt-get "${APT_OPTS[@]}" download "$pkg:$deb_arch"
             done
             for deb in *.deb; do
               dpkg-deb -x "$deb" "$sysroot"
@@ -200,11 +214,16 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # Linux musl：每个架构产出动态与静态两个版本
+  # Linux musl：全部在 x86_64 runner 上构建，各出动态与静态两个版本。
+  #
+  # 为什么 arm64 也用 ubuntu-latest 交叉编译而不用原生 arm runner：
+  #   cross-software 发布的工具链是在 ubuntu-22.04 (x86_64) 上构建的，
+  #   其 bin/ 下的 *-gcc 本身是 x86_64 可执行文件，在 arm64 runner 上
+  #   会报 "Exec format error"。因此所有 musl 目标统一在 x86_64 上构建。
   # ---------------------------------------------------------------------------
   linux-musl:
     name: Linux musl ${{ matrix.arch }} (${{ matrix.linkage }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -212,17 +231,17 @@ jobs:
         # 其它 matrix 键的隐式组合语义。
         include:
           # ---- x64 ----
-          - { arch: x64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, native: true, linkage: dynamic }
-          - { arch: x64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, native: true, linkage: static }
+          - { arch: x64, target: x86_64-unknown-linux-musl, linkage: dynamic }
+          - { arch: x64, target: x86_64-unknown-linux-musl, linkage: static }
           # ---- arm64 ----
-          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, native: true, linkage: dynamic }
-          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, native: true, linkage: static }
-          # ---- arm（交叉编译，soft-float）----
-          - { arch: arm, target: armv7-unknown-linux-musleabi, runner: ubuntu-latest, native: false, linkage: dynamic }
-          - { arch: arm, target: armv7-unknown-linux-musleabi, runner: ubuntu-latest, native: false, linkage: static }
-          # ---- riscv64（交叉编译）----
-          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, runner: ubuntu-latest, native: false, linkage: dynamic }
-          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, runner: ubuntu-latest, native: false, linkage: static }
+          - { arch: arm64, target: aarch64-unknown-linux-musl, linkage: dynamic }
+          - { arch: arm64, target: aarch64-unknown-linux-musl, linkage: static }
+          # ---- arm（soft-float）----
+          - { arch: arm, target: armv7-unknown-linux-musleabi, linkage: dynamic }
+          - { arch: arm, target: armv7-unknown-linux-musleabi, linkage: static }
+          # ---- riscv64 ----
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, linkage: dynamic }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, linkage: static }
     steps:
       - uses: actions/checkout@v4
 
@@ -241,7 +260,7 @@ jobs:
       #   arch:    arm | riscv64 | aarch64 | x86_64
       #   variant: lto-nodebug（启用 LTO）| nodebug | debug
       #
-      # 原生目标也使用它而非 apt 的 musl-tools：后者只支持静态链接，
+      # 不使用 apt 的 musl-tools：它只提供 libc.a（静态），没有 libc.so，
       # 动态链接会报 "cannot find libgcc_s.so.1"。
       - name: 安装 musl 工具链
         shell: bash

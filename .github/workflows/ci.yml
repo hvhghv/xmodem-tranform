@@ -114,13 +114,33 @@ jobs:
       # 做法是从 Ubuntu 仓库下载目标架构的 deb 包并解压到独立 sysroot，
       # 再用 PKG_CONFIG_* 变量让 pkg-config 在其中查找 libudev。
       #
-      # 注意：apt-get download pkg:<arch> 要求该外部架构已通过
-      # dpkg --add-architecture 注册，否则报 "Unable to locate package"。
+      # 两个坑：
+      #   1. apt-get download pkg:<arch> 要求该外部架构已通过
+      #      dpkg --add-architecture 注册，否则报 "Unable to locate package"。
+      #   2. 注册外部架构后，apt 会去所有已配置的源抓该架构的索引，
+      #      而 runner 上的 azure-cli / microsoft 等第三方源没有 armhf /
+      #      riscv64，会刷屏 404 甚至导致 update 失败。
+      #      因此这里用一份只含 Ubuntu 官方 archive 的临时 sourcelist。
       - name: 安装构建依赖（交叉）
         if: ${{ !matrix.native }}
         shell: bash
         run: |
           set -euo pipefail
+
+          # 只保留 Ubuntu 官方源，避免第三方源在外部架构上 404
+          cat > /tmp/ubuntu-only.list <<'EOF'
+          deb http://archive.ubuntu.com/ubuntu/ noble main universe
+          deb http://archive.ubuntu.com/ubuntu/ noble-updates main universe
+          deb http://security.ubuntu.com/ubuntu/ noble-security main universe
+          EOF
+          # 去掉 heredoc 的缩进
+          sed -i 's/^[[:space:]]*//' /tmp/ubuntu-only.list
+
+          APT_OPTS=(
+            -o Dir::Etc::sourcelist=/tmp/ubuntu-only.list
+            -o Dir::Etc::sourceparts=-
+            -o APT::Get::List-Cleanup=0
+          )
 
           if [ '${{ matrix.libudev }}' = 'true' ]; then
             # 架构名到 Ubuntu deb 架构的映射
@@ -133,8 +153,8 @@ jobs:
             sudo dpkg --add-architecture "$deb_arch"
           fi
 
-          sudo apt-get update
-          sudo apt-get install -y pkg-config ${{ matrix.apt }}
+          sudo apt-get "${APT_OPTS[@]}" update
+          sudo apt-get "${APT_OPTS[@]}" install -y pkg-config ${{ matrix.apt }}
 
           if [ '${{ matrix.libudev }}' = 'true' ]; then
             sysroot="$PWD/.sysroot/${{ matrix.arch }}"
@@ -143,7 +163,7 @@ jobs:
 
             # 下载并解压 libudev 开发包与其运行时库
             for pkg in libudev-dev libudev1; do
-              apt-get download "$pkg:$deb_arch"
+              apt-get "${APT_OPTS[@]}" download "$pkg:$deb_arch"
             done
             for deb in *.deb; do
               dpkg-deb -x "$deb" "$sysroot"
@@ -234,37 +254,41 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # Linux musl：x64/arm64 原生，arm/riscv64 交叉编译
-  # 每个架构同时产出动态与静态链接两个版本。
+  # Linux musl：全部在 x86_64 runner 上构建，各出动态与静态两个版本。
+  #
+  # 为什么 arm64 也用 ubuntu-latest 交叉编译而不用原生 arm runner：
+  #   cross-software 发布的工具链是在 ubuntu-22.04 (x86_64) 上构建的，
+  #   其 bin/ 下的 *-gcc 本身是 x86_64 可执行文件，在 arm64 runner 上
+  #   会报 "Exec format error"。因此所有 musl 目标统一在 x86_64 上构建。
   #
   # musl 目标不依赖 libudev（serialport 用 not(target_env = "musl") 门控），
   # 因此交叉编译无需任何系统库，只需 musl 交叉工具链。
   #
-  # 交叉工具链来自 hvhghv/cross-software 的 v15.1.0-musl-gcc release。
   # 该工具链只提供 soft-float 的 arm-linux-musleabi，没有 hard-float 变体，
   # 因此不构建 armhf（armv7-unknown-linux-musleabihf）。
   # ---------------------------------------------------------------------------
   linux-musl:
     name: Linux musl ${{ matrix.arch }} (${{ matrix.linkage }})
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         # 每个架构显式列出 dynamic 与 static 两条，避免依赖 include 与
         # 其它 matrix 键的隐式组合语义（那样容易因改动而意外增减任务）。
+        # test 表示该目标能否在当前 runner 上直接运行测试。
         include:
           # ---- x64 ----
-          - { arch: x64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, native: true, linkage: dynamic }
-          - { arch: x64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, native: true, linkage: static }
+          - { arch: x64, target: x86_64-unknown-linux-musl, linkage: dynamic, test: false }
+          - { arch: x64, target: x86_64-unknown-linux-musl, linkage: static, test: true }
           # ---- arm64 ----
-          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, native: true, linkage: dynamic }
-          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, native: true, linkage: static }
-          # ---- arm（交叉编译，soft-float）----
-          - { arch: arm, target: armv7-unknown-linux-musleabi, runner: ubuntu-latest, native: false, linkage: dynamic }
-          - { arch: arm, target: armv7-unknown-linux-musleabi, runner: ubuntu-latest, native: false, linkage: static }
-          # ---- riscv64（交叉编译）----
-          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, runner: ubuntu-latest, native: false, linkage: dynamic }
-          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, runner: ubuntu-latest, native: false, linkage: static }
+          - { arch: arm64, target: aarch64-unknown-linux-musl, linkage: dynamic, test: false }
+          - { arch: arm64, target: aarch64-unknown-linux-musl, linkage: static, test: false }
+          # ---- arm（soft-float）----
+          - { arch: arm, target: armv7-unknown-linux-musleabi, linkage: dynamic, test: false }
+          - { arch: arm, target: armv7-unknown-linux-musleabi, linkage: static, test: false }
+          # ---- riscv64 ----
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, linkage: dynamic, test: false }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, linkage: static, test: false }
     steps:
       - uses: actions/checkout@v4
 
@@ -286,7 +310,7 @@ jobs:
       #   musl-toolchain-arm-lto-nodebug/bin/arm-linux-musleabi-gcc
       #   musl-toolchain-x86_64-lto-nodebug/bin/x86_64-linux-musl-gcc
       #
-      # 原生目标也使用它而非 apt 的 musl-tools：后者只支持静态链接，
+      # 不使用 apt 的 musl-tools：它只提供 libc.a（静态），没有 libc.so，
       # 动态链接会报 "cannot find libgcc_s.so.1"。
       - name: 安装 musl 工具链
         shell: bash
@@ -337,16 +361,14 @@ jobs:
           echo "CARGO_TARGET_${target_upper}_LINKER=$MUSL_CC" >> "$GITHUB_ENV"
           echo "链接器: $MUSL_CC"
 
-      - name: 运行测试（仅原生目标）
-        if: matrix.native
+      - name: 运行测试（仅可在本机执行的目标）
+        # 动态链接的 musl 产物需要 /lib/ld-musl-<arch>.so.1，
+        # Ubuntu runner 上没有该 loader，因此只有静态 x64 能直接运行。
+        if: matrix.test
         shell: bash
         run: |
           set -euo pipefail
-          if [ '${{ matrix.linkage }}' = 'static' ]; then
-            RUSTFLAGS='-C target-feature=+crt-static' cargo test --release --target ${{ matrix.target }}
-          else
-            RUSTFLAGS='-C target-feature=-crt-static' cargo test --release --target ${{ matrix.target }}
-          fi
+          RUSTFLAGS='-C target-feature=+crt-static' cargo test --release --target ${{ matrix.target }}
 
       - name: 构建
         shell: bash
