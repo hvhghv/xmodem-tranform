@@ -10,7 +10,8 @@
   (function () {
     try {
       var t = localStorage.getItem("xmodem.theme");
-      var ok = ["green", "light", "contrast", "warm", "violet"];
+      var ok = ["green", "light", "contrast", "warm", "violet",
+                "mint", "sakura", "sky", "citrus"];
       if (t && ok.indexOf(t) >= 0) {
         document.documentElement.setAttribute("data-theme", t);
       }
@@ -427,6 +428,222 @@
     --ansi-bgb7: #443d5c;
   }
 
+  /* 7. 薄荷：淡青绿底，清凉通透 */
+  html[data-theme="mint"] {
+    --bg: #f0faf6;
+    --panel: #ffffff;
+    --panel-2: #e2f5ee;
+    --border: #bfe3d6;
+    --text: #14453a;
+    --muted: #4a7566;
+    --accent: #0f766e;
+    --accent-hover: #115e59;
+    --accent-soft: #5eead4;
+    --success: #047857;
+    --warn: #b45309;
+    --error: #dc2626;
+    --on-accent: #ffffff;
+    --scroll-hover: #a8d5c6;
+    --term-text: #14453a;
+    --term-ts: #6f9d8e;
+    --cursor-idle: rgba(20, 69, 58, .6);
+    --cursor-active: #0f766e;
+    --ansi-0: #2d5f52;
+    --ansi-1: #dc2626;
+    --ansi-2: #059669;
+    --ansi-3: #a16207;
+    --ansi-4: #0284c7;
+    --ansi-5: #9333ea;
+    --ansi-6: #0d9488;
+    --ansi-7: #0f3d33;
+    --ansi-b0: #5f8d7f;
+    --ansi-b1: #ef4444;
+    --ansi-b2: #10b981;
+    --ansi-b3: #ca8a04;
+    --ansi-b4: #0ea5e9;
+    --ansi-b5: #a855f7;
+    --ansi-b6: #14b8a6;
+    --ansi-b7: #042f2a;
+    --ansi-bg0: #cfe8df;
+    --ansi-bg1: #fee2e2;
+    --ansi-bg2: #d1fae5;
+    --ansi-bg3: #fef9c3;
+    --ansi-bg4: #e0f2fe;
+    --ansi-bg5: #f3e8ff;
+    --ansi-bg6: #ccfbf1;
+    --ansi-bg7: #e2f5ee;
+    --ansi-bgb0: #b3d9cc;
+    --ansi-bgb1: #fca5a5;
+    --ansi-bgb2: #a7f3d0;
+    --ansi-bgb3: #fde68a;
+    --ansi-bgb4: #bae6fd;
+    --ansi-bgb5: #e9d5ff;
+    --ansi-bgb6: #99f6e4;
+    --ansi-bgb7: #cfe8df;
+  }
+
+  /* 8. 樱粉：淡粉底，柔和清新 */
+  html[data-theme="sakura"] {
+    --bg: #fdf4f7;
+    --panel: #ffffff;
+    --panel-2: #fbe8ef;
+    --border: #f0cddb;
+    --text: #4a2333;
+    --muted: #8a5f72;
+    --accent: #be185d;
+    --accent-hover: #9d174d;
+    --accent-soft: #f9a8d4;
+    --success: #047857;
+    --warn: #b45309;
+    --error: #be123c;
+    --on-accent: #ffffff;
+    --scroll-hover: #e5b8c9;
+    --term-text: #4a2333;
+    --term-ts: #b08699;
+    --cursor-idle: rgba(74, 35, 51, .6);
+    --cursor-active: #be185d;
+    --ansi-0: #6b4353;
+    --ansi-1: #e11d48;
+    --ansi-2: #059669;
+    --ansi-3: #b45309;
+    --ansi-4: #7c3aed;
+    --ansi-5: #c026d3;
+    --ansi-6: #0891b2;
+    --ansi-7: #3f1d2b;
+    --ansi-b0: #9c7385;
+    --ansi-b1: #fb7185;
+    --ansi-b2: #10b981;
+    --ansi-b3: #d97706;
+    --ansi-b4: #8b5cf6;
+    --ansi-b5: #e879f9;
+    --ansi-b6: #22d3ee;
+    --ansi-b7: #2d1420;
+    --ansi-bg0: #f5dae3;
+    --ansi-bg1: #ffe4e6;
+    --ansi-bg2: #d1fae5;
+    --ansi-bg3: #fef3c7;
+    --ansi-bg4: #ede9fe;
+    --ansi-bg5: #fae8ff;
+    --ansi-bg6: #cffafe;
+    --ansi-bg7: #fbe8ef;
+    --ansi-bgb0: #e8c4d1;
+    --ansi-bgb1: #fda4af;
+    --ansi-bgb2: #a7f3d0;
+    --ansi-bgb3: #fde68a;
+    --ansi-bgb4: #ddd6fe;
+    --ansi-bgb5: #f5d0fe;
+    --ansi-bgb6: #a5f3fc;
+    --ansi-bgb7: #f5dae3;
+  }
+
+  /* 9. 天青：淡蓝底，清朗开阔 */
+  html[data-theme="sky"] {
+    --bg: #f1f8fe;
+    --panel: #ffffff;
+    --panel-2: #e3f0fb;
+    --border: #c3ddf2;
+    --text: #123a5c;
+    --muted: #4d7392;
+    --accent: #0369a1;
+    --accent-hover: #075985;
+    --accent-soft: #7dd3fc;
+    --success: #047857;
+    --warn: #b45309;
+    --error: #dc2626;
+    --on-accent: #ffffff;
+    --scroll-hover: #a9cbe6;
+    --term-text: #123a5c;
+    --term-ts: #7295b3;
+    --cursor-idle: rgba(18, 58, 92, .6);
+    --cursor-active: #0369a1;
+    --ansi-0: #33556f;
+    --ansi-1: #dc2626;
+    --ansi-2: #059669;
+    --ansi-3: #a16207;
+    --ansi-4: #1d4ed8;
+    --ansi-5: #9333ea;
+    --ansi-6: #0e7490;
+    --ansi-7: #0c2f4a;
+    --ansi-b0: #6489a8;
+    --ansi-b1: #ef4444;
+    --ansi-b2: #10b981;
+    --ansi-b3: #ca8a04;
+    --ansi-b4: #3b82f6;
+    --ansi-b5: #a855f7;
+    --ansi-b6: #06b6d4;
+    --ansi-b7: #08243a;
+    --ansi-bg0: #d3e5f3;
+    --ansi-bg1: #fee2e2;
+    --ansi-bg2: #d1fae5;
+    --ansi-bg3: #fef9c3;
+    --ansi-bg4: #dbeafe;
+    --ansi-bg5: #f3e8ff;
+    --ansi-bg6: #cffafe;
+    --ansi-bg7: #e3f0fb;
+    --ansi-bgb0: #b8d4e8;
+    --ansi-bgb1: #fca5a5;
+    --ansi-bgb2: #a7f3d0;
+    --ansi-bgb3: #fde68a;
+    --ansi-bgb4: #bfdbfe;
+    --ansi-bgb5: #e9d5ff;
+    --ansi-bgb6: #a5f3fc;
+    --ansi-bgb7: #d3e5f3;
+  }
+
+  /* 10. 柠檬：淡黄绿底，明快清爽 */
+  html[data-theme="citrus"] {
+    --bg: #fbfdf0;
+    --panel: #ffffff;
+    --panel-2: #f3f8dd;
+    --border: #dce9b8;
+    --text: #3d4a12;
+    --muted: #6b7638;
+    --accent: #4d7c0f;
+    --accent-hover: #3f6212;
+    --accent-soft: #bef264;
+    --success: #047857;
+    --warn: #b45309;
+    --error: #dc2626;
+    --on-accent: #ffffff;
+    --scroll-hover: #c6d69a;
+    --term-text: #3d4a12;
+    --term-ts: #8f9b5c;
+    --cursor-idle: rgba(61, 74, 18, .6);
+    --cursor-active: #4d7c0f;
+    --ansi-0: #57632c;
+    --ansi-1: #dc2626;
+    --ansi-2: #059669;
+    --ansi-3: #a16207;
+    --ansi-4: #0284c7;
+    --ansi-5: #9333ea;
+    --ansi-6: #0d9488;
+    --ansi-7: #333d0d;
+    --ansi-b0: #7f8c4e;
+    --ansi-b1: #ef4444;
+    --ansi-b2: #10b981;
+    --ansi-b3: #ca8a04;
+    --ansi-b4: #0ea5e9;
+    --ansi-b5: #a855f7;
+    --ansi-b6: #14b8a6;
+    --ansi-b7: #2a330a;
+    --ansi-bg0: #e5eec4;
+    --ansi-bg1: #fee2e2;
+    --ansi-bg2: #d1fae5;
+    --ansi-bg3: #fef08a;
+    --ansi-bg4: #e0f2fe;
+    --ansi-bg5: #f3e8ff;
+    --ansi-bg6: #ccfbf1;
+    --ansi-bg7: #f3f8dd;
+    --ansi-bgb0: #cdd9a6;
+    --ansi-bgb1: #fca5a5;
+    --ansi-bgb2: #a7f3d0;
+    --ansi-bgb3: #fde047;
+    --ansi-bgb4: #bae6fd;
+    --ansi-bgb5: #e9d5ff;
+    --ansi-bgb6: #99f6e4;
+    --ansi-bgb7: #e5eec4;
+  }
+
   /* ==========================================================================
      终端字体
      通过 <html data-font="..."> 切换，只影响等宽区域（终端、日志、输入框）。
@@ -785,6 +1002,10 @@
       <option value="contrast">高对比</option>
       <option value="warm">暖阳</option>
       <option value="violet">紫罗兰</option>
+      <option value="mint">薄荷</option>
+      <option value="sakura">樱粉</option>
+      <option value="sky">天青</option>
+      <option value="citrus">柠檬</option>
     </select>
   </label>
   <label class="picker" title="切换终端字体（内嵌开源字体，离线可用）">
@@ -999,7 +1220,8 @@
   // ---------- 主题 ----------
   // 可选主题列表，需与 <select id="theme-select"> 中的 value 保持一致。
   // "default" 表示不设置 data-theme 属性（使用 :root 中的默认变量）。
-  const THEMES = ["default", "green", "light", "contrast", "warm", "violet"];
+  const THEMES = ["default", "green", "light", "contrast", "warm", "violet",
+                  "mint", "sakura", "sky", "citrus"];
   const THEME_KEY = "xmodem.theme";
 
   /** 读取上次选择的主题；非法值回退到 default */
