@@ -1988,6 +1988,12 @@
   let cursorFocused = false;
   /** 保存的光标位置（ESC 7 / CSI s），null 表示未保存 */
   let savedCursor = null;
+  /**
+   * 备用屏快照（CSI ?1049h）。
+   * null 表示当前在主屏；非 null 时保存着进入备用屏前的主屏内容与光标，
+   * 供 CSI ?1049l 恢复。vi/vim/less/top 等全屏程序依赖这个机制。
+   */
+  let altScreen = null;
 
   // 自上次渲染后被修改过的行号集合。
   // 只靠「新增行 + 最后一行」判断是不够的：某行可能在为空时就被渲染过，
@@ -2006,6 +2012,9 @@
     rowNodes = [];
     dirtyRows.clear();
     lastCursorRow = -1;
+    // 整块缓冲区被替换（清屏 / 备用屏切换），已渲染的 DOM 节点全部失效，
+    // 必须清空重建，否则残留的旧行会与新内容叠在一起。
+    forceFullRedraw = true;
     for (let r = 0; r < screen.length; r++) dirtyRows.add(r);
   }
 
@@ -2110,6 +2119,8 @@
     rowNodes = [];
     dirtyRows.clear();
     lastCursorRow = -1;
+    // 内容被整体丢弃，必须同时清空 DOM，否则下一帧会把新行追加到旧内容之后
+    forceFullRedraw = true;
   }
 
   /** 清行：0=光标到行尾，1=行首到光标，2=整行 */
@@ -2294,8 +2305,43 @@
     cursor.row = 0;
     cursor.col = 0;
     savedCursor = null;
+    altScreen = null;      // 丢弃备用屏，回到主屏
     resetSgr();
     currentCls = sgrToClass();
+    markAllDirty();
+  }
+
+  /**
+   * 进入备用屏（CSI ?1049h / ?1047h / ?47h）。
+   *
+   * vi / vim / less / top 等全屏程序会切到一块独立的屏幕缓冲区，
+   * 退出时再切回来，从而完整恢复切换前的 shell 内容。
+   *
+   * 若不实现这个机制，全屏程序会直接改写主屏内容，
+   * 退出后原来的命令历史就永久丢失了 —— 这正是「vi 退出后
+   * 之前的输出不见了」的原因。
+   */
+  function enterAltScreen() {
+    if (altScreen) return;   // 已在备用屏，避免重复保存
+    altScreen = {
+      screen: screen,
+      cursor: { row: cursor.row, col: cursor.col },
+    };
+    screen = [{ cells: [] }];
+    cursor.row = 0;
+    cursor.col = 0;
+    markAllDirty();
+  }
+
+  /** 退出备用屏，恢复进入前保存的内容与光标 */
+  function exitAltScreen() {
+    if (!altScreen) return;
+    screen = altScreen.screen;
+    cursor.row = altScreen.cursor.row;
+    cursor.col = altScreen.cursor.col;
+    // 内容被整体替换，已渲染的行节点索引全部失效
+    if (cursor.row >= screen.length) cursor.row = Math.max(0, screen.length - 1);
+    altScreen = null;
     markAllDirty();
   }
 
@@ -2334,6 +2380,8 @@
   // 上一次渲染时光标所在行。光标移走后该行必须重建以移除光标元素，
   // 否则旧光标会残留，表现为「每行都有光标在闪」。
   let lastCursorRow = -1;
+  // 强制下一帧清空 DOM 全量重建（清屏 / 备用屏切换后必须置位）
+  let forceFullRedraw = false;
 
   /** 把行缓冲渲染为 DOM（每帧一次，只重建发生变化的部分） */
   function flushTerminal() {
@@ -2345,8 +2393,10 @@
     const wasAtBottom =
       terminal.scrollHeight - terminal.scrollTop - terminal.clientHeight < 40;
 
-    // 行缓冲被裁剪或清屏后行数变少，需要全量重建
-    if (screen.length < renderedRows) {
+    // 行缓冲被裁剪、清屏或整体替换（备用屏切换）后，已渲染节点全部失效，
+    // 需要清空 DOM 全量重建
+    if (forceFullRedraw || screen.length < renderedRows) {
+      forceFullRedraw = false;
       renderedRows = 0;
       rowNodes = [];
       dirtyRows.clear();
@@ -2688,9 +2738,40 @@
         break;
       case "h":
       case "l": {
-        // 私有模式：?25 = 光标显隐，其余（如 ?7 自动换行）忽略
-        if (isPrivate && nums[0] === 25) {
-          cursorVisible = final === "h";
+        // 私有模式设置 / 重置
+        if (!isPrivate) break;
+        const on = final === "h";
+        switch (nums[0]) {
+          case 25:
+            cursorVisible = on;
+            break;
+          // 备用屏（alternate screen buffer）
+          //   ?1049 = 保存光标 + 切到备用屏（vi/vim/less/top 等全屏程序使用）
+          //   ?1047 = 仅切备用屏（不清屏）
+          //   ?47  = 老式写法，等价于 1047
+          //   ?1048 = 仅保存/恢复光标
+          case 1049:
+            if (on) {
+              // 进入备用屏前先保存光标，退出时恢复
+              saveCursor();
+              enterAltScreen();
+            } else {
+              exitAltScreen();
+              restoreCursor();
+            }
+            break;
+          case 1047:
+          case 47:
+            if (on) enterAltScreen();
+            else exitAltScreen();
+            break;
+          case 1048:
+            if (on) saveCursor();
+            else restoreCursor();
+            break;
+          default:
+            // 其余模式（?7 自动换行、?1 光标键模式等）忽略
+            break;
         }
         break;
       }
@@ -3475,6 +3556,7 @@
       cursor: () => ({ ...cursor }),
       sgr: () => ({ ...sgr }),
       savedCursor: () => savedCursor,
+      altScreen: () => (altScreen ? altScreen.screen.map((l) => l.cells.map((c) => c.ch).join("")) : null),
       write: (s) => writeText(s),
     };
   }
