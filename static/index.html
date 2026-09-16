@@ -766,11 +766,26 @@
     font-size: 12px;
     cursor: pointer;
   }
-  /* 字体选择器用等宽字体预览，方便对比字形 */
+
+  /* 字体选择器：单一控件，内部用 optgroup 分「内置 / 系统」两段 */
   #font-select { font-family: var(--term-font); }
-  #sysfont-select { font-family: var(--term-font); }
-  /* 本机未安装的系统字体 / 服务端未提供的内置字体，一律置灰 */
-  #sysfont-select option[data-available="0"] { color: var(--muted); }
+
+  /* 分组标题行（不可选中），用界面字体并弱化，与字体名区分开 */
+  #font-select optgroup {
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 11px;
+    font-style: normal;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  /* 分组内的条目用等宽字体预览，方便对比字形 */
+  #font-select optgroup option {
+    font-family: var(--term-font);
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--text);
+  }
+  /* 不可用的字体（系统未安装 / 内置未包含）置灰 */
   #font-select option[data-available="0"] { color: var(--muted); }
 
   main {
@@ -1059,40 +1074,38 @@
       <option value="citrus">柠檬</option>
     </select>
   </label>
-  <label class="picker" title="内置字体：随程序分发，离线可用">
-    <span>内置字体</span>
+  <label class="picker" title="终端字体：内置字体随程序分发，系统字体取自本机">
+    <span>字体</span>
     <select id="font-select">
-      <option value="none">不使用</option>
-      <option value="jetbrains-mono">JetBrains Mono</option>
-      <option value="fira-code">Fira Code</option>
-      <option value="cascadia-code">Cascadia Code</option>
-      <option value="source-code-pro">Source Code Pro</option>
-      <option value="ibm-plex-mono">IBM Plex Mono</option>
-      <option value="hack">Hack</option>
-      <option value="inconsolata">Inconsolata</option>
-      <option value="ubuntu-mono">Ubuntu Mono</option>
-      <option value="space-mono">Space Mono</option>
-      <option value="roboto-mono">Roboto Mono</option>
-      <option value="cousine">Cousine</option>
-    </select>
-  </label>
-  <label class="picker" title="系统字体：使用本机已安装的字体，未安装则不生效">
-    <span>系统字体</span>
-    <select id="sysfont-select">
-      <option value="none">不使用</option>
-      <option value="consolas">Consolas</option>
-      <option value="cascadia-mono">Cascadia Mono</option>
-      <option value="courier-new">Courier New</option>
-      <option value="lucida-console">Lucida Console</option>
-      <option value="menlo">Menlo</option>
-      <option value="monaco">Monaco</option>
-      <option value="sf-mono">SF Mono</option>
-      <option value="dejavu-sans-mono">DejaVu Sans Mono</option>
-      <option value="liberation-mono">Liberation Mono</option>
-      <option value="noto-sans-mono">Noto Sans Mono</option>
-      <option value="source-han-mono">Source Han Mono SC</option>
-      <option value="sarasa-mono">Sarasa Mono SC</option>
-      <option value="msyh-mono">Microsoft YaHei Mono</option>
+      <option value="none">默认（不指定）</option>
+      <optgroup label="内置字体 · 离线可用">
+        <option value="builtin:jetbrains-mono">JetBrains Mono</option>
+        <option value="builtin:fira-code">Fira Code</option>
+        <option value="builtin:cascadia-code">Cascadia Code</option>
+        <option value="builtin:source-code-pro">Source Code Pro</option>
+        <option value="builtin:ibm-plex-mono">IBM Plex Mono</option>
+        <option value="builtin:hack">Hack</option>
+        <option value="builtin:inconsolata">Inconsolata</option>
+        <option value="builtin:ubuntu-mono">Ubuntu Mono</option>
+        <option value="builtin:space-mono">Space Mono</option>
+        <option value="builtin:roboto-mono">Roboto Mono</option>
+        <option value="builtin:cousine">Cousine</option>
+      </optgroup>
+      <optgroup label="系统字体 · 需本机已安装">
+        <option value="system:consolas">Consolas</option>
+        <option value="system:cascadia-mono">Cascadia Mono</option>
+        <option value="system:courier-new">Courier New</option>
+        <option value="system:lucida-console">Lucida Console</option>
+        <option value="system:menlo">Menlo</option>
+        <option value="system:monaco">Monaco</option>
+        <option value="system:sf-mono">SF Mono</option>
+        <option value="system:dejavu-sans-mono">DejaVu Sans Mono</option>
+        <option value="system:liberation-mono">Liberation Mono</option>
+        <option value="system:noto-sans-mono">Noto Sans Mono</option>
+        <option value="system:source-han-mono">Source Han Mono SC</option>
+        <option value="system:sarasa-mono">Sarasa Mono SC</option>
+        <option value="system:msyh-mono">Microsoft YaHei Mono</option>
+      </optgroup>
     </select>
   </label>
   <span id="ws-badge" class="badge err">服务离线</span>
@@ -1329,15 +1342,20 @@
   }
 
   // ---------- 终端字体 ----------
-  // 两个**互相隔离**的维度，分别对应两个下拉框：
-  //   BUILTIN_FONTS 内置字体（内嵌 woff2，随程序分发，离线可用）
-  //   SYSTEM_FONTS  系统字体（本机已安装，未安装则不生效）
-  // 两者各自独立成栈，切换其一不影响另一，见 CSS 中 --term-font 的组装。
-  // 值需与 <select id="font-select"> / <select id="sysfont-select"> 保持一致。
+  // 单一选择框，用 <optgroup> 分成两段：
+  //   内置字体（内嵌 woff2，随程序分发，离线可用）
+  //   系统字体（本机已安装，未安装则不生效）
+  //
+  // 选项 value 用前缀区分来源，避免两段出现同名 key：
+  //   "none"                  不指定，沿用 --mono 默认栈
+  //   "builtin:<name>"        内置字体
+  //   "system:<name>"         系统字体
+  //
+  // 两段在 CSS 中仍是**互相隔离**的两个槽（--font-slot-builtin /
+  // --font-slot-system），切换其中一个不影响另一个的取值。
 
-  /** 内置字体：value -> 用于界面预览的 CSS font-family */
+  /** 内置字体：name -> @font-face 家族名 */
   const BUILTIN_FONTS = {
-    "none": null,
     "jetbrains-mono": "JBMonoTool",
     "fira-code": "FiraCodeTool",
     "cascadia-code": "CascadiaTool",
@@ -1351,9 +1369,8 @@
     "cousine": "CousineTool",
   };
 
-  /** 系统字体：value -> 本机字体名（可能未安装） */
+  /** 系统字体：name -> 本机字体名（可能未安装） */
   const SYSTEM_FONTS = {
-    "none": null,
     "consolas": "Consolas",
     "cascadia-mono": "Cascadia Mono",
     "courier-new": "Courier New",
@@ -1369,8 +1386,28 @@
     "msyh-mono": "Microsoft YaHei Mono",
   };
 
-  const FONT_KEY = "xmodem.font";
-  const SYSFONT_KEY = "xmodem.sysfont";
+  // 两个维度分别持久化，与 CSS 的两个槽一一对应
+  const FONT_KEY = "xmodem.font"; // 内置字体
+  const SYSFONT_KEY = "xmodem.sysfont"; // 系统字体
+
+  /** 解析选项 value 为 { kind, name } */
+  function parseFontValue(v) {
+    if (!v || v === "none") return { kind: "none", name: null };
+    const i = v.indexOf(":");
+    if (i < 0) return { kind: "none", name: null };
+    const kind = v.slice(0, i);
+    const name = v.slice(i + 1);
+    if (kind === "builtin" && BUILTIN_FONTS[name]) return { kind, name };
+    if (kind === "system" && SYSTEM_FONTS[name]) return { kind, name };
+    return { kind: "none", name: null };
+  }
+
+  /** 由两个维度拼出 select 的 value */
+  function composeFontValue(builtin, system) {
+    if (builtin && BUILTIN_FONTS[builtin]) return `builtin:${builtin}`;
+    if (system && SYSTEM_FONTS[system]) return `system:${system}`;
+    return "none";
+  }
 
   /** 从 localStorage 读取一个值，非法时回退到 none */
   function loadChoice(key, table) {
@@ -1392,30 +1429,54 @@
   }
 
   /**
-   * 应用一个字体维度。
-   * @param {string} attr  要设置的属性名（data-font / data-font-sys）
-   * @param {string} selId 对应下拉框 id
+   * 应用一个字体维度到对应的 CSS 槽。
+   * @param {string} attr  属性名（data-font / data-font-sys）
    * @param {object} table 值表
-   * @param {string} value 目标值
+   * @param {string} name  字体名，或 "none"
    */
-  function applyChoice(attr, selId, table, value) {
-    const v = Object.prototype.hasOwnProperty.call(table, value) ? value : "none";
+  function applySlot(attr, table, name) {
+    const v = Object.prototype.hasOwnProperty.call(table, name) ? name : "none";
     if (v === "none") {
       document.documentElement.removeAttribute(attr);
     } else {
       document.documentElement.setAttribute(attr, v);
     }
-    const sel = $(selId);
-    if (sel && sel.value !== v) sel.value = v;
     return v;
   }
 
-  function applyFont(name) {
-    return applyChoice("data-font", "font-select", BUILTIN_FONTS, name);
+  /**
+   * 应用选择框的值：同时更新两个维度。
+   *
+   * 关键：选择框一次只能有一个值，因此选中某一项时，
+   * 必须**清空另一个维度**，否则旧的维度会残留并干扰新选择。
+   */
+  function applyFont(value) {
+    const { kind, name } = parseFontValue(value);
+
+    const builtin = kind === "builtin" ? applySlot("data-font", BUILTIN_FONTS, name) : applySlot("data-font", BUILTIN_FONTS, "none");
+    const system = kind === "system" ? applySlot("data-font-sys", SYSTEM_FONTS, name) : applySlot("data-font-sys", SYSTEM_FONTS, "none");
+
+    saveChoice(FONT_KEY, builtin);
+    saveChoice(SYSFONT_KEY, system);
+
+    const sel = $("font-select");
+    if (sel) {
+      const want = composeFontValue(builtin, system);
+      if (sel.value !== want) sel.value = want;
+    }
+    return { builtin, system };
   }
 
-  function applySysFont(name) {
-    return applyChoice("data-font-sys", "sysfont-select", SYSTEM_FONTS, name);
+  /** 启动时按已保存的两个维度还原选择框 */
+  function restoreFont() {
+    const builtin = loadChoice(FONT_KEY, BUILTIN_FONTS);
+    const system = loadChoice(SYSFONT_KEY, SYSTEM_FONTS);
+
+    applySlot("data-font", BUILTIN_FONTS, builtin);
+    applySlot("data-font-sys", SYSTEM_FONTS, system);
+
+    const sel = $("font-select");
+    if (sel) sel.value = composeFontValue(builtin, system);
   }
 
   /**
@@ -1448,22 +1509,30 @@
   }
 
   /**
-   * 标注本机未安装的系统字体（置灰 + 加后缀），避免用户选了却看不到效果。
-   * 已安装的保持原样；全部不可用时给出提示。
+   * 标注不可用的字体选项（置灰 + 加后缀），避免用户选了却看不到效果。
+   *
+   * - 系统字体：用 canvas 测宽判断本机是否安装
+   * - 内置字体：用 document.fonts 判断服务端是否提供了该字体
+   *   （mini 构建不携带字体文件，此时全部不可用）
+   *
+   * 若当前选中的项不可用，自动回退到「默认」。
    */
-  function markUnavailableSysFonts() {
-    const sel = $("sysfont-select");
+  async function markUnavailableFonts() {
+    const sel = $("font-select");
     if (!sel) return;
 
-    let available = 0;
+    let sysAvailable = 0;
+    let builtinAvailable = 0;
+
+    // ---- 系统字体：canvas 测宽 ----
     for (const opt of sel.options) {
-      const family = SYSTEM_FONTS[opt.value];
-      if (!family) continue; // "不使用"
+      const { kind, name } = parseFontValue(opt.value);
+      if (kind !== "system") continue;
 
+      const family = SYSTEM_FONTS[name];
       const ok = isFontAvailable(family);
-      if (ok) available++;
+      if (ok) sysAvailable++;
 
-      // 用 data 标记，便于样式与调试；文案只加一次
       opt.dataset.available = ok ? "1" : "0";
       if (!ok && !opt.textContent.endsWith("（未安装）")) {
         opt.textContent += "（未安装）";
@@ -1471,31 +1540,14 @@
       opt.title = ok ? `本机已安装：${family}` : `本机未安装：${family}`;
     }
 
-    // 一个都没装时，提示用户该维度不可用
-    if (available === 0) {
-      sel.title = "本机未检测到列表中任何等宽字体，请改用内置字体";
-    }
-  }
-
-  /**
-   * 标注服务端未提供的内置字体。
-   *
-   * mini 构建不携带字体文件，此时 `/fonts/*.woff2` 全部 404，
-   * 对应的 @font-face 永远加载失败。这里通过 document.fonts 检测，
-   * 把不可用的选项置灰并提示，避免用户选了却没反应。
-   *
-   * 注意：@font-face 是惰性的（未使用不加载），因此需要显式
-   * 调用 document.fonts.load() 触发，再检查 status。
-   */
-  async function markUnavailableBuiltinFonts() {
-    const sel = $("font-select");
-    if (!sel) return;
-
-    // 逐个触发加载并检查结果；失败即视为服务端未提供
+    // ---- 内置字体：document.fonts ----
+    // @font-face 是惰性的（未使用不加载），必须显式 load() 触发后再看 status
     const checks = [];
     for (const opt of sel.options) {
-      const family = BUILTIN_FONTS[opt.value];
-      if (!family) continue; // "不使用"
+      const { kind, name } = parseFontValue(opt.value);
+      if (kind !== "builtin") continue;
+
+      const family = BUILTIN_FONTS[name];
       checks.push(
         document.fonts
           .load(`13px "${family}"`)
@@ -1503,6 +1555,7 @@
             const face = [...document.fonts].find((f) => f.family === family);
             // loaded 才算成功；error / unloaded 都视为不可用
             const ok = !!face && face.status === "loaded";
+            if (ok) builtinAvailable++;
             opt.dataset.available = ok ? "1" : "0";
             if (!ok && !opt.textContent.endsWith("（不可用）")) {
               opt.textContent += "（不可用）";
@@ -1519,15 +1572,24 @@
           })
       );
     }
+    await Promise.all(checks);
 
-    const results = await Promise.all(checks);
-    const anyOk = results.some(Boolean);
-    if (!anyOk) {
-      sel.title = "当前构建未内置字体，请改用「系统字体」或保持默认";
-      // 若当前选中的正是不可用的内置字体，回退到「不使用」
-      const cur = sel.value;
-      if (BUILTIN_FONTS[cur] && sel.selectedOptions[0]?.dataset.available === "0") {
-        saveChoice(FONT_KEY, applyFont("none"));
+    // ---- 当前选中项不可用时回退 ----
+    const cur = sel.selectedOptions[0];
+    if (cur && cur.dataset.available === "0") {
+      applyFont("none");
+    }
+
+    // ---- 整组不可用时给出提示 ----
+    const groups = sel.querySelectorAll("optgroup");
+    if (groups.length === 2) {
+      if (builtinAvailable === 0) {
+        groups[0].label = "内置字体 · 当前构建未包含";
+        groups[0].disabled = true;
+      }
+      if (sysAvailable === 0) {
+        groups[1].label = "系统字体 · 本机均未安装";
+        groups[1].disabled = true;
       }
     }
   }
@@ -2991,22 +3053,16 @@
     saveTheme(applyTheme(e.target.value));
   };
 
-  // 字体：内置与系统两个维度互相隔离，各自独立应用与保存
-  applyFont(loadChoice(FONT_KEY, BUILTIN_FONTS));
+  // 字体：单一选择框，内部按「内置 / 系统」两段组织。
+  // restoreFont() 按已保存的两个维度还原选中项；
+  // 之后每次变更都会同时更新两个维度（选中一段即清空另一段）。
+  restoreFont();
   $("font-select").onchange = (e) => {
-    saveChoice(FONT_KEY, applyFont(e.target.value));
+    applyFont(e.target.value);
   };
 
-  applySysFont(loadChoice(SYSFONT_KEY, SYSTEM_FONTS));
-  $("sysfont-select").onchange = (e) => {
-    saveChoice(SYSFONT_KEY, applySysFont(e.target.value));
-  };
-
-  // 标注本机实际可用的系统字体，未安装的置灰提示
-  markUnavailableSysFonts();
-
-  // 标注服务端未提供的内置字体（mini 构建不带字体），异步完成
-  markUnavailableBuiltinFonts();
+  // 标注不可用的字体（系统字体未安装 / 内置字体当前构建未包含），异步完成
+  markUnavailableFonts();
 
   setPortOpen(false, null);
   applyInputMode();
