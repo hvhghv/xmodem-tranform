@@ -1,0 +1,390 @@
+name: CI
+
+# 推送与 PR 时构建并测试所有目标平台。
+# 产物以 artifact 形式上传，保留 30 天。
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的重复触发只保留最新一次，避免浪费 CI 配额。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # 统一二进制名，供打包步骤引用。
+  BIN_NAME: xmodem-tranform
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Windows x64（MSVC，动态链接）
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: 运行测试
+        run: cargo test --release
+
+      - name: 构建
+        run: cargo build --release
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $stage = "dist/$env:BIN_NAME-$version-windows-x64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/release/$env:BIN_NAME.exe" $stage
+          Copy-Item README.md $stage
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+          Write-Host "已打包: $stage.zip"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Linux glibc：x64 与 arm64 使用原生 runner，armhf/armel/riscv64 交叉编译
+  #
+  # libudev 说明：
+  #   - 除 armel 外，其余 gnu 目标都启用 libudev（需目标架构的 libudev 开发库）
+  #   - armel（armv7 soft-float）Ubuntu 未提供 libudev 包，故用 --no-default-features
+  #     关闭该 feature，构建出的产物串口枚举不含设备厂商信息
+  # ---------------------------------------------------------------------------
+  linux-gnu:
+    name: Linux gnu ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---- 原生构建 ----
+          # x64 与 arm64 有原生 runner，可直接运行测试
+          - { arch: x64, target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, native: true, libudev: true, apt: '' }
+          - { arch: arm64, target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, native: true, libudev: true, apt: '' }
+          # ---- 交叉编译 ----
+          # armhf 与 riscv64 有对应的 libudev 包，启用该 feature
+          - { arch: armhf, target: armv7-unknown-linux-gnueabihf, runner: ubuntu-latest, native: false, libudev: true, apt: gcc-arm-linux-gnueabihf }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-gnu, runner: ubuntu-latest, native: false, libudev: true, apt: gcc-riscv64-linux-gnu }
+          # armel（armv7 soft-float）：Ubuntu 未提供 armel 版 libudev，
+          # 故用 --no-default-features 关闭该 feature 后构建。
+          # 代价：串口枚举退化为扫描 /dev/tty*，不显示设备厂商信息。
+          - { arch: armel, target: armv7-unknown-linux-gnueabi, runner: ubuntu-latest, native: false, libudev: false, apt: gcc-arm-linux-gnueabi }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-gnu-${{ matrix.arch }}
+
+      # 原生目标需要 libudev 开发库；交叉目标需要对应架构的 sysroot。
+      - name: 安装构建依赖（原生）
+        if: matrix.native && matrix.libudev
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libudev-dev
+
+      # 交叉编译：安装交叉编译器，并准备目标架构的 libudev sysroot。
+      # 做法是从 Ubuntu 仓库下载目标架构的 deb 包并解压到独立 sysroot，
+      # 再用 PKG_CONFIG_* 变量让 pkg-config 在其中查找 libudev。
+      - name: 安装构建依赖（交叉）
+        if: ${{ !matrix.native }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y pkg-config ${{ matrix.apt }}
+
+          if [ '${{ matrix.libudev }}' = 'true' ]; then
+            # 架构名到 Ubuntu deb 架构的映射
+            case '${{ matrix.arch }}' in
+              armhf)   deb_arch=armhf ;;
+              riscv64) deb_arch=riscv64 ;;
+              *)       echo "未配置的架构: ${{ matrix.arch }}"; exit 1 ;;
+            esac
+
+            sysroot="$PWD/.sysroot/${{ matrix.arch }}"
+            mkdir -p "$sysroot"
+            cd "$sysroot"
+
+            # 下载并解压 libudev 开发包与其运行时库
+            for pkg in libudev-dev libudev1; do
+              apt-get download "$pkg:$deb_arch"
+            done
+            for deb in *.deb; do
+              dpkg-deb -x "$deb" "$sysroot"
+            done
+            rm -f *.deb
+
+            echo "已准备 $deb_arch sysroot: $sysroot"
+            find "$sysroot" -name 'libudev*' | head -20
+          fi
+
+      - name: 运行测试（仅原生目标）
+        # 交叉编译产物无法在当前 runner 上执行，测试已在 x64/arm64 原生通过。
+        if: matrix.native
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ '${{ matrix.libudev }}' = 'true' ]; then
+            cargo test --release --target ${{ matrix.target }}
+          else
+            cargo test --release --target ${{ matrix.target }} --no-default-features
+          fi
+
+      - name: 构建
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          features=''
+          if [ '${{ matrix.libudev }}' = 'false' ]; then
+            features='--no-default-features'
+          fi
+
+          # 交叉编译时把 libudev sysroot 传给 pkg-config
+          if [ '${{ matrix.native }}' = 'false' ] && [ '${{ matrix.libudev }}' = 'true' ]; then
+            sysroot="$PWD/.sysroot/${{ matrix.arch }}"
+            # 找到 pkgconfig 目录（deb 解压后位于 usr/lib/<triplet>/pkgconfig）
+            pkgconfig_dir="$(find "$sysroot" -type d -name pkgconfig | head -1)"
+            export PKG_CONFIG_ALLOW_CROSS=1
+            export PKG_CONFIG_DIR=''
+            export PKG_CONFIG_LIBDIR="$pkgconfig_dir"
+            export PKG_CONFIG_SYSROOT_DIR="$sysroot"
+            echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
+          fi
+
+          cargo build --release --target ${{ matrix.target }} $features
+
+      - name: 打包
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
+          suffix=''
+          if [ '${{ matrix.libudev }}' = 'false' ]; then
+            suffix='-nolibudev'
+          fi
+          stage="dist/$BIN_NAME-$version-linux-${{ matrix.arch }}-gnu$suffix"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/$BIN_NAME" "$stage/"
+          cp README.md "$stage/"
+          tar -czf "$stage.tar.gz" -C dist "$(basename "$stage")"
+          echo "已打包: $stage.tar.gz"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-gnu-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Linux musl：x64/arm64 原生，arm/riscv64 交叉编译
+  # 每个架构同时产出动态与静态链接两个版本。
+  #
+  # musl 目标不依赖 libudev（serialport 用 not(target_env = "musl") 门控），
+  # 因此交叉编译无需任何系统库，只需 musl 交叉工具链。
+  #
+  # 交叉工具链来自 hvhghv/cross-software 的 v15.1.0-musl-gcc release。
+  # 该工具链只提供 soft-float 的 arm-linux-musleabi，没有 hard-float 变体，
+  # 因此不构建 armhf（armv7-unknown-linux-musleabihf）。
+  # ---------------------------------------------------------------------------
+  linux-musl:
+    name: Linux musl ${{ matrix.arch }} (${{ matrix.linkage }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 每个架构显式列出 dynamic 与 static 两条，避免依赖 include 与
+        # 其它 matrix 键的隐式组合语义（那样容易因改动而意外增减任务）。
+        include:
+          # ---- x64 ----
+          - { arch: x64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, native: true, linkage: dynamic }
+          - { arch: x64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, native: true, linkage: static }
+          # ---- arm64 ----
+          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, native: true, linkage: dynamic }
+          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, native: true, linkage: static }
+          # ---- arm（交叉编译，soft-float）----
+          - { arch: arm, target: armv7-unknown-linux-musleabi, runner: ubuntu-latest, native: false, linkage: dynamic }
+          - { arch: arm, target: armv7-unknown-linux-musleabi, runner: ubuntu-latest, native: false, linkage: static }
+          # ---- riscv64（交叉编译）----
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, runner: ubuntu-latest, native: false, linkage: dynamic }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, runner: ubuntu-latest, native: false, linkage: static }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-musl-${{ matrix.arch }}-${{ matrix.linkage }}
+
+      # 原生 musl 构建需要 musl 工具链提供链接器
+      - name: 安装 musl 工具链（原生）
+        if: matrix.native
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      # 交叉编译使用 hvhghv/cross-software 的 v15.1.0-musl-gcc release。
+      # 资产命名：musl-toolchain-{arch}-{variant}.tar.gz
+      #   arch:    arm | riscv64 | aarch64 | x86_64
+      #   variant: lto-nodebug（启用 LTO）| nodebug | debug
+      # 压缩包内第一级目录为 musl-toolchain-{arch}-{variant}，结构示例：
+      #   musl-toolchain-arm-lto-nodebug/bin/arm-linux-musleabi-gcc
+      #   musl-toolchain-riscv64-lto-nodebug/bin/riscv64-linux-musl-gcc
+      - name: 安装 musl 交叉工具链
+        if: ${{ !matrix.native }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          toolchain_tag='v15.1.0-musl-gcc'
+          toolchain_variant='lto-nodebug'
+
+          # 架构名到工具链资产名与编译器前缀的映射
+          case '${{ matrix.arch }}' in
+            arm)     pkg_arch=arm     ; cc_prefix=arm-linux-musleabi ;;
+            riscv64) pkg_arch=riscv64 ; cc_prefix=riscv64-linux-musl ;;
+            *)       echo "未配置的架构: ${{ matrix.arch }}"; exit 1 ;;
+          esac
+
+          asset="musl-toolchain-${pkg_arch}-${toolchain_variant}.tar.gz"
+          toolchain_url="https://github.com/hvhghv/cross-software/releases/download/${toolchain_tag}/${asset}"
+          echo "下载工具链: $toolchain_url"
+          curl -fsSL "$toolchain_url" -o /tmp/musl-toolchain.tar.gz
+
+          # 解压到 $HOME，保留压缩包内的第一级目录
+          mkdir -p "$HOME/musl"
+          tar -xzf /tmp/musl-toolchain.tar.gz -C "$HOME/musl"
+
+          toolchain_root="$HOME/musl/musl-toolchain-${pkg_arch}-${toolchain_variant}"
+          if [ ! -d "$toolchain_root" ]; then
+            echo "未找到预期的工具链目录，实际内容："
+            ls -la "$HOME/musl"
+            exit 1
+          fi
+
+          echo "$toolchain_root/bin" >> "$GITHUB_PATH"
+          echo "MUSL_CC=$toolchain_root/bin/${cc_prefix}-gcc" >> "$GITHUB_ENV"
+          echo "工具链目录: $toolchain_root"
+          ls "$toolchain_root/bin" | head -20
+
+      - name: 配置链接器
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          target_upper="$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')"
+
+          if [ '${{ matrix.native }}' = 'true' ]; then
+            # 原生：直接用 apt 安装的 musl-gcc
+            echo "CARGO_TARGET_${target_upper}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+          else
+            # 交叉：工具链的编译器已按目标 ABI 配置好（arm 为 soft-float），
+            # 无需额外传 -mfloat-abi。
+            echo "CARGO_TARGET_${target_upper}_LINKER=$MUSL_CC" >> "$GITHUB_ENV"
+            echo "链接器: $MUSL_CC"
+          fi
+
+      - name: 运行测试（仅原生目标）
+        if: matrix.native
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ '${{ matrix.linkage }}' = 'static' ]; then
+            RUSTFLAGS='-C target-feature=+crt-static' cargo test --release --target ${{ matrix.target }}
+          else
+            RUSTFLAGS='-C target-feature=-crt-static' cargo test --release --target ${{ matrix.target }}
+          fi
+
+      - name: 构建
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # musl 默认静态链接，动态链接需显式关闭 crt-static
+          if [ '${{ matrix.linkage }}' = 'static' ]; then
+            rustflags='-C target-feature=+crt-static'
+          else
+            rustflags='-C target-feature=-crt-static'
+          fi
+
+          export RUSTFLAGS="$rustflags"
+          echo "RUSTFLAGS=$RUSTFLAGS"
+
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: 校验链接方式
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/$BIN_NAME"
+
+          # 用 readelf 检查是否含 INTERP 段（动态）或完全静态
+          if command -v readelf >/dev/null 2>&1; then
+            if readelf -l "$bin" 2>/dev/null | grep -q 'INTERP'; then
+              actual='dynamic'
+            else
+              actual='static'
+            fi
+            echo "链接方式: $actual（期望 ${{ matrix.linkage }}）"
+            if [ "$actual" != '${{ matrix.linkage }}' ]; then
+              echo "::error::链接方式与期望不符"
+              exit 1
+            fi
+          else
+            echo "readelf 不可用，跳过链接方式校验"
+          fi
+
+      - name: 打包
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
+          stage="dist/$BIN_NAME-$version-linux-${{ matrix.arch }}-musl-${{ matrix.linkage }}"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/$BIN_NAME" "$stage/"
+          cp README.md "$stage/"
+          tar -czf "$stage.tar.gz" -C dist "$(basename "$stage")"
+          echo "已打包: $stage.tar.gz"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-musl-${{ matrix.arch }}-${{ matrix.linkage }}
+          path: dist/*.tar.gz
+          if-no-files-found: error

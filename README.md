@@ -1,6 +1,39 @@
 # xmodem-tranform
 
+[![CI](https://github.com/hvhghv/xmodem-tranform/actions/workflows/ci.yml/badge.svg)](https://github.com/hvhghv/xmodem-tranform/actions/workflows/ci.yml)
+[![Release](https://github.com/hvhghv/xmodem-tranform/actions/workflows/release.yml/badge.svg)](https://github.com/hvhghv/xmodem-tranform/actions/workflows/release.yml)
+
 用 Rust 实现的 XMODEM 串口文件传输工具，内置 HTML 前端界面与串口终端。
+
+## 下载
+
+从 [Releases](https://github.com/hvhghv/xmodem-tranform/releases) 页面下载对应平台的压缩包。
+
+| 平台 | 架构 | 链接方式 | 包名后缀 | 说明 |
+| --- | --- | --- | --- | --- |
+| Windows | x64 | 动态 | `windows-x64` | — |
+| Linux | x64 | 动态 | `linux-x64-gnu` | 需 glibc 2.17+ |
+| Linux | arm64 | 动态 | `linux-arm64-gnu` | — |
+| Linux | armhf | 动态 | `linux-armhf-gnu` | armv7 硬浮点 ABI |
+| Linux | armel | 动态 | `linux-armel-gnu-nolibudev` | armv7 软浮点 ABI，**无 libudev** |
+| Linux | riscv64 | 动态 | `linux-riscv64-gnu` | — |
+| Linux | x64 | 动态 / 静态 | `linux-x64-musl-{dynamic,static}` | — |
+| Linux | arm64 | 动态 / 静态 | `linux-arm64-musl-{dynamic,static}` | — |
+| Linux | arm | 动态 / 静态 | `linux-arm-musl-{dynamic,static}` | armv7 软浮点 ABI |
+| Linux | riscv64 | 动态 / 静态 | `linux-riscv64-musl-{dynamic,static}` | — |
+
+### 如何选择
+
+- **不确定选哪个** → 优先 `musl-static`（静态链接，不依赖系统库，拿到即用）
+- **要在普通桌面发行版运行** → 选 `gnu`（动态链接 glibc）。
+  **注意**：`musl-dynamic` 需要系统提供 `/lib/ld-musl-<arch>.so.1`，
+  Ubuntu / Debian / Fedora 默认**没有**这个文件，只有 Alpine 或装了 musl 运行时的系统才能直接运行
+- **要完整的串口设备信息**（界面显示 `COM16 — USB-SERIAL CH340` 这类厂商名）→ 选 `gnu` 且**不是** `armel-nolibudev`
+- **嵌入式设备 / 容器** → 选 `musl-static`，体积小且无依赖
+
+> **关于 `armel-gnu-nolibudev`**：Ubuntu 未提供 armel（armv7 软浮点）架构的 `libudev`
+> 开发包，因此该版本编译时关闭了 `libudev` feature。串口枚举会退化为扫描 `/dev/tty*`，
+> 只显示端口名，不显示设备厂商与 VID/PID。功能不受影响，可正常收发数据。
 
 ## 功能
 
@@ -198,14 +231,72 @@ SOH/STX | 包序号 | 255-包序号 | 数据(128/1024) | 校验(1或2字节)
 cargo test
 ```
 
-共 29 个单元测试，覆盖：
+共 32 个单元测试，覆盖：
 
 - CRC-16/XMODEM 标准测试向量（`"123456789"` → `0x31C3`）
 - 128/1024 字节包的组包与校验（CRC 与 checksum 两种模式）
 - 包解析、序号反码校验、损坏检测
-- XMODEM 发送状态机（成功路径、取消、握手超时）
+- XMODEM 发送状态机（成功路径、取消、握手超时、连发 NAK 不错位）
 - base64 编解码往返与边界情况
 - 串口配置校验与串口信息格式化
+
+## 构建
+
+### 本地构建
+
+```bash
+# 默认（启用 libudev，Linux glibc 下可显示串口设备厂商信息）
+cargo build --release
+
+# 关闭 libudev（串口枚举退化为扫描 /dev/tty*）
+cargo build --release --no-default-features
+```
+
+### Cargo features
+
+| feature | 默认 | 说明 |
+| --- | --- | --- |
+| `libudev` | ✅ 启用 | 通过 udev 获取串口设备的 USB VID/PID、厂商与产品名。仅 Linux glibc 有效；musl 目标自动跳过（`serialport` 用 `not(target_env = "musl")` 门控） |
+
+### CI 构建矩阵
+
+推送代码或 PR 时，`.github/workflows/ci.yml` 会构建以下 14 个目标：
+
+| 平台 | 架构 | 目标三元组 | Runner | 构建方式 |
+| --- | --- | --- | --- | --- |
+| Windows | x64 | `x86_64-pc-windows-msvc` | `windows-latest` | 原生 |
+| gnu | x64 | `x86_64-unknown-linux-gnu` | `ubuntu-latest` | 原生 |
+| gnu | arm64 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | 原生 |
+| gnu | armhf | `armv7-unknown-linux-gnueabihf` | `ubuntu-latest` | 交叉 |
+| gnu | armel | `armv7-unknown-linux-gnueabi` | `ubuntu-latest` | 交叉（无 libudev） |
+| gnu | riscv64 | `riscv64gc-unknown-linux-gnu` | `ubuntu-latest` | 交叉 |
+| musl | x64 / arm64 | `*-unknown-linux-musl` | 视架构而定 | 原生，各出动态与静态两个版本 |
+| musl | arm / riscv64 | `*-unknown-linux-musl*` | `ubuntu-latest` | 交叉，各出动态与静态两个版本 |
+
+**交叉编译说明**：
+
+- gnu 交叉编译需要目标架构的 `libudev`，CI 从 Ubuntu 仓库下载对应 deb 并解压为 sysroot，
+  再用 `PKG_CONFIG_LIBDIR` / `PKG_CONFIG_SYSROOT_DIR` 让 pkg-config 在其中查找
+- musl 交叉编译使用 [hvhghv/cross-software](https://github.com/hvhghv/cross-software)
+  的 `v15.1.0-musl-gcc` release 工具链（`lto-nodebug` 变体，GCC 15.1.0 / musl 1.2.6），
+  无需任何系统库（musl 目标不依赖 libudev）
+- 该工具链只提供 **soft-float** 的 `arm-linux-musleabi`，没有 hard-float 变体，
+  因此 musl 不构建 `armhf`（`armv7-unknown-linux-musleabihf`）；
+  需要硬浮点 ABI 请使用 gnu 版的 `armhf`
+- 交叉编译产物无法在 x64 runner 上执行，因此**只在原生目标（x64 / arm64）运行测试**；
+  测试为纯逻辑单元测试，与架构无关
+
+### 发布
+
+推送 `v*` 标签（如 `v0.1.0`）会触发 `.github/workflows/release.yml`，
+构建全部平台、生成 `SHA256SUMS.txt` 并创建 GitHub Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+也可在 Actions 页面手动触发 Release workflow 并指定标签名。
 
 ## 依赖
 

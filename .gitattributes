@@ -1,0 +1,12 @@
+# GitHub Actions 的 workflow 在 Linux runner 上以 bash 执行 run: 块。
+# 若文件带 CRLF，bash 会报 "syntax error near unexpected token `$'in\r''"。
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Shell 脚本同样必须在 Linux 上以 LF 执行
+*.sh text eol=lf
+
+# Windows 批处理与 PowerShell 保持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

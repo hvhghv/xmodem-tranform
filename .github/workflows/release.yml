@@ -1,0 +1,381 @@
+name: Release
+
+# 推送 v* 标签时构建全部平台并创建 GitHub Release。
+# 也支持手动触发，用于补发或测试。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的标签名（如 v0.1.0）'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN_NAME: xmodem-tranform
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Windows x64
+  # ---------------------------------------------------------------------------
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: 构建
+        run: cargo build --release
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $stage = "dist/$env:BIN_NAME-$version-windows-x64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/release/$env:BIN_NAME.exe" $stage
+          Copy-Item README.md $stage
+          Compress-Archive -Path $stage -DestinationPath "$stage.zip"
+          Write-Host "已打包: $stage.zip"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Linux glibc：x64/arm64 原生，armhf/armel/riscv64 交叉编译
+  # armel 因 Ubuntu 无 libudev 包而禁用该 feature
+  # ---------------------------------------------------------------------------
+  linux-gnu:
+    name: Linux gnu ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, target: x86_64-unknown-linux-gnu, runner: ubuntu-latest, native: true, libudev: true, apt: '' }
+          - { arch: arm64, target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, native: true, libudev: true, apt: '' }
+          - { arch: armhf, target: armv7-unknown-linux-gnueabihf, runner: ubuntu-latest, native: false, libudev: true, apt: gcc-arm-linux-gnueabihf }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-gnu, runner: ubuntu-latest, native: false, libudev: true, apt: gcc-riscv64-linux-gnu }
+          # armel：Ubuntu 无 armel 版 libudev，关闭该 feature 后构建
+          - { arch: armel, target: armv7-unknown-linux-gnueabi, runner: ubuntu-latest, native: false, libudev: false, apt: gcc-arm-linux-gnueabi }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux-gnu-${{ matrix.arch }}
+
+      - name: 安装构建依赖（原生）
+        if: matrix.native && matrix.libudev
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libudev-dev
+
+      - name: 安装构建依赖（交叉）
+        if: ${{ !matrix.native }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y pkg-config ${{ matrix.apt }}
+
+          if [ '${{ matrix.libudev }}' = 'true' ]; then
+            case '${{ matrix.arch }}' in
+              armhf)   deb_arch=armhf ;;
+              riscv64) deb_arch=riscv64 ;;
+              *)       echo "未配置的架构: ${{ matrix.arch }}"; exit 1 ;;
+            esac
+
+            sysroot="$PWD/.sysroot/${{ matrix.arch }}"
+            mkdir -p "$sysroot"
+            cd "$sysroot"
+
+            for pkg in libudev-dev libudev1; do
+              apt-get download "$pkg:$deb_arch"
+            done
+            for deb in *.deb; do
+              dpkg-deb -x "$deb" "$sysroot"
+            done
+            rm -f *.deb
+
+            echo "已准备 $deb_arch sysroot: $sysroot"
+            find "$sysroot" -name 'libudev*' | head -20
+          fi
+
+      - name: 构建
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          features=''
+          if [ '${{ matrix.libudev }}' = 'false' ]; then
+            features='--no-default-features'
+          fi
+
+          if [ '${{ matrix.native }}' = 'false' ] && [ '${{ matrix.libudev }}' = 'true' ]; then
+            sysroot="$PWD/.sysroot/${{ matrix.arch }}"
+            pkgconfig_dir="$(find "$sysroot" -type d -name pkgconfig | head -1)"
+            export PKG_CONFIG_ALLOW_CROSS=1
+            export PKG_CONFIG_DIR=''
+            export PKG_CONFIG_LIBDIR="$pkgconfig_dir"
+            export PKG_CONFIG_SYSROOT_DIR="$sysroot"
+            echo "PKG_CONFIG_LIBDIR=$PKG_CONFIG_LIBDIR"
+          fi
+
+          cargo build --release --target ${{ matrix.target }} $features
+
+      - name: 打包
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
+          suffix=''
+          if [ '${{ matrix.libudev }}' = 'false' ]; then
+            suffix='-nolibudev'
+          fi
+          stage="dist/$BIN_NAME-$version-linux-${{ matrix.arch }}-gnu$suffix"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/$BIN_NAME" "$stage/"
+          cp README.md "$stage/"
+          tar -czf "$stage.tar.gz" -C dist "$(basename "$stage")"
+          echo "已打包: $stage.tar.gz"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-gnu-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Linux musl：每个架构产出动态与静态两个版本
+  # ---------------------------------------------------------------------------
+  linux-musl:
+    name: Linux musl ${{ matrix.arch }} (${{ matrix.linkage }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 每个架构显式列出 dynamic 与 static 两条，避免依赖 include 与
+        # 其它 matrix 键的隐式组合语义。
+        include:
+          # ---- x64 ----
+          - { arch: x64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, native: true, linkage: dynamic }
+          - { arch: x64, target: x86_64-unknown-linux-musl, runner: ubuntu-latest, native: true, linkage: static }
+          # ---- arm64 ----
+          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, native: true, linkage: dynamic }
+          - { arch: arm64, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, native: true, linkage: static }
+          # ---- arm（交叉编译，soft-float）----
+          - { arch: arm, target: armv7-unknown-linux-musleabi, runner: ubuntu-latest, native: false, linkage: dynamic }
+          - { arch: arm, target: armv7-unknown-linux-musleabi, runner: ubuntu-latest, native: false, linkage: static }
+          # ---- riscv64（交叉编译）----
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, runner: ubuntu-latest, native: false, linkage: dynamic }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl, runner: ubuntu-latest, native: false, linkage: static }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux-musl-${{ matrix.arch }}-${{ matrix.linkage }}
+
+      - name: 安装 musl 工具链（原生）
+        if: matrix.native
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      # 交叉编译使用 hvhghv/cross-software 的 v15.1.0-musl-gcc release。
+      # 资产命名：musl-toolchain-{arch}-{variant}.tar.gz
+      #   arch:    arm | riscv64 | aarch64 | x86_64
+      #   variant: lto-nodebug（启用 LTO）| nodebug | debug
+      - name: 安装 musl 交叉工具链
+        if: ${{ !matrix.native }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          toolchain_tag='v15.1.0-musl-gcc'
+          toolchain_variant='lto-nodebug'
+
+          case '${{ matrix.arch }}' in
+            arm)     pkg_arch=arm     ; cc_prefix=arm-linux-musleabi ;;
+            riscv64) pkg_arch=riscv64 ; cc_prefix=riscv64-linux-musl ;;
+            *)       echo "未配置的架构: ${{ matrix.arch }}"; exit 1 ;;
+          esac
+
+          asset="musl-toolchain-${pkg_arch}-${toolchain_variant}.tar.gz"
+          toolchain_url="https://github.com/hvhghv/cross-software/releases/download/${toolchain_tag}/${asset}"
+          echo "下载工具链: $toolchain_url"
+          curl -fsSL "$toolchain_url" -o /tmp/musl-toolchain.tar.gz
+
+          mkdir -p "$HOME/musl"
+          tar -xzf /tmp/musl-toolchain.tar.gz -C "$HOME/musl"
+
+          toolchain_root="$HOME/musl/musl-toolchain-${pkg_arch}-${toolchain_variant}"
+          if [ ! -d "$toolchain_root" ]; then
+            echo "未找到预期的工具链目录，实际内容："
+            ls -la "$HOME/musl"
+            exit 1
+          fi
+
+          echo "$toolchain_root/bin" >> "$GITHUB_PATH"
+          echo "MUSL_CC=$toolchain_root/bin/${cc_prefix}-gcc" >> "$GITHUB_ENV"
+          echo "工具链目录: $toolchain_root"
+
+      - name: 配置链接器
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          target_upper="$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')"
+
+          if [ '${{ matrix.native }}' = 'true' ]; then
+            echo "CARGO_TARGET_${target_upper}_LINKER=musl-gcc" >> "$GITHUB_ENV"
+          else
+            # 工具链编译器已按目标 ABI 配置好（arm 为 soft-float），无需额外传参
+            echo "CARGO_TARGET_${target_upper}_LINKER=$MUSL_CC" >> "$GITHUB_ENV"
+          fi
+
+      - name: 构建
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ '${{ matrix.linkage }}' = 'static' ]; then
+            rustflags='-C target-feature=+crt-static'
+          else
+            rustflags='-C target-feature=-crt-static'
+          fi
+
+          export RUSTFLAGS="$rustflags"
+          echo "RUSTFLAGS=$RUSTFLAGS"
+
+          cargo build --release --target ${{ matrix.target }}
+
+      - name: 校验链接方式
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/$BIN_NAME"
+
+          if command -v readelf >/dev/null 2>&1; then
+            if readelf -l "$bin" 2>/dev/null | grep -q 'INTERP'; then
+              actual='dynamic'
+            else
+              actual='static'
+            fi
+            echo "链接方式: $actual（期望 ${{ matrix.linkage }}）"
+            if [ "$actual" != '${{ matrix.linkage }}' ]; then
+              echo "::error::链接方式与期望不符"
+              exit 1
+            fi
+          else
+            echo "readelf 不可用，跳过链接方式校验"
+          fi
+
+      - name: 打包
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
+          stage="dist/$BIN_NAME-$version-linux-${{ matrix.arch }}-musl-${{ matrix.linkage }}"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release/$BIN_NAME" "$stage/"
+          cp README.md "$stage/"
+          tar -czf "$stage.tar.gz" -C dist "$(basename "$stage")"
+          echo "已打包: $stage.tar.gz"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-musl-${{ matrix.arch }}-${{ matrix.linkage }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 汇总所有产物，生成校验和并创建 Release
+  # ---------------------------------------------------------------------------
+  publish:
+    name: 发布 Release
+    needs: [windows, linux-gnu, linux-musl]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载全部 artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: 生成校验和
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          echo "待发布的文件："
+          ls -lh
+          # 为每个包生成 sha256，并汇总到 SHA256SUMS.txt
+          sha256sum *.zip *.tar.gz > SHA256SUMS.txt
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+
+      - name: 确定标签名
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt

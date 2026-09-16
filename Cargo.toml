@@ -6,7 +6,15 @@ description = "XMODEM file transfer over serial port with a web-based GUI and se
 
 [dependencies]
 # 串口通信
-serialport = "4.7"
+#
+# 默认启用 libudev：Linux glibc 下可通过 udev 获取串口设备的 USB VID/PID、
+# 厂商与产品名，界面上能显示如 "COM16 — USB-SERIAL CH340" 的友好名称。
+#
+# 但 libudev 是系统库，交叉编译时需要目标架构的 libudev 开发包。
+# 部分架构（如 armel / armv7 soft-float）Ubuntu 未提供对应包，
+# 此时用 `--no-default-features` 关闭本 feature 即可正常构建，
+# 代价是串口枚举退化为扫描 /dev/tty*，不显示设备厂商信息。
+serialport = { version = "4.7", default-features = false }
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
 # Web 服务
@@ -23,6 +31,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 打开浏览器
 open = "5"
+
+[features]
+# 默认启用 libudev，与 serialport 的默认行为一致
+default = ["libudev"]
+# 通过 udev 获取串口设备的详细信息（仅 Linux glibc 有效）
+libudev = ["serialport/libudev"]
 
 [profile.release]
 opt-level = 3
