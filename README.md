@@ -50,6 +50,7 @@
 - **行尾可选**：CR / LF / CRLF / 无
 - **数据导出**：把接收到的全部数据导出为文本 / HEX / 原始二进制
 - **6 套界面主题**：深空蓝 / 终端绿 / 浅色 / 高对比 / 暖阳 / 紫罗兰，选择后自动记忆（见下文）
+- **11 款开源终端字体**：JetBrains Mono / Fira Code / Cascadia Code 等，全部内嵌，离线可用（见下文）
 - **完整 ANSI 颜色支持**（见下文）
 - **实时进度**：显示包序号、字节数、百分比与重传提示
 - **可取消传输**：任意时刻中止发送，并向对端发送 CAN 序列
@@ -148,6 +149,7 @@ src/
   web.rs       # axum Web 服务与 WebSocket 处理
 static/
   index.html   # 前端界面（内嵌进二进制）
+  fonts/       # 终端字体 woff2（内嵌进二进制）
 ```
 
 ### ANSI 颜色支持
@@ -192,6 +194,37 @@ static/
 
 > 首屏防闪白：`<head>` 中有一段内联脚本，在样式表之前就把主题写到 `<html>` 上，
 > 避免先渲染默认主题再跳变。
+
+### 终端字体
+
+界面右上角可切换终端字体，选择同样写入 `localStorage` 自动记忆。
+
+| 字体 | 许可 | 特点 |
+| --- | --- | --- |
+| 系统默认 | — | 沿用 `Cascadia Mono` / `Consolas` / `Menlo` 等系统等宽字体 |
+| JetBrains Mono | SIL OFL 1.1 | 专为代码设计，字形偏圆润 |
+| Fira Code | SIL OFL 1.1 | Mozilla 出品，编程连字最丰富 |
+| Cascadia Code | SIL OFL 1.1 | 微软出品，Windows Terminal 默认字体 |
+| Source Code Pro | SIL OFL 1.1 | Adobe 出品，中性耐看 |
+| IBM Plex Mono | SIL OFL 1.1 | IBM 设计语言，辨识度高 |
+| Hack | MIT | 基于 Bitstream Vera，小字号清晰 |
+| Inconsolata | SIL OFL 1.1 | 窄字宽，同屏可容纳更多列 |
+| Ubuntu Mono | Ubuntu Font License | Ubuntu 品牌字体，风格独特 |
+| Space Mono | SIL OFL 1.1 | 复古打字机风格 |
+| Roboto Mono | Apache-2.0 | Google 出品，Android 生态常见 |
+| Cousine | Apache-2.0 | 与 Courier New 度量兼容 |
+
+**全部字体内嵌在二进制中**，通过 `GET /fonts/<name>.woff2` 提供，
+因此**完全离线可用**——本工具面向嵌入式设备场景，不能依赖 CDN。
+
+字体文件位于 `static/fonts/`，由 `src/web.rs` 用 `include_bytes!` 嵌入。
+11 款字体合计约 289 KB，二进制体积因此增加约 0.32 MB。
+
+> **连字默认关闭**：Fira Code、JetBrains Mono、Cascadia Code 等含编程连字，
+> 会把 `->` `!=` `<=` 合并成单个字形。终端必须保证「一个字符 = 一个等宽格」，
+> 连字会破坏列对齐，因此统一设置 `font-variant-ligatures: none`。
+
+字体只作用于等宽区域（终端、日志、输入框、进度文本），界面其余部分仍用系统 UI 字体。
 
 ### 终端渲染模型
 

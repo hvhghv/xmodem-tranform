@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>XMODEM 串口传输工具</title>
-<!-- 首屏防闪白：在样式表加载前就把主题写到 <html> 上。
+<!-- 首屏防闪白：在样式表加载前就把主题与字体写到 <html> 上。
      必须内联，且位于样式表之前，否则会先渲染默认主题再跳变。 -->
 <script>
   (function () {
@@ -14,10 +14,75 @@
       if (t && ok.indexOf(t) >= 0) {
         document.documentElement.setAttribute("data-theme", t);
       }
+      var f = localStorage.getItem("xmodem.font");
+      if (f) {
+        document.documentElement.setAttribute("data-font", f);
+      }
     } catch (e) { /* localStorage 不可用时忽略 */ }
   })();
 </script>
 <style>
+  /* ==========================================================================
+     终端字体（内嵌 woff2，由后端 /fonts/<name>.woff2 提供）
+     全部为开源许可：SIL OFL 1.1 / Apache-2.0，可自由分发。
+     内嵌的目的是保证离线环境（嵌入式设备）也能正常显示。
+     ========================================================================== */
+  @font-face {
+    font-family: "JBMonoTool";
+    src: url("/fonts/jetbrains-mono.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "FiraCodeTool";
+    src: url("/fonts/fira-code.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "CascadiaTool";
+    src: url("/fonts/cascadia-code.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "SourceCodeProTool";
+    src: url("/fonts/source-code-pro.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "IBMPlexMonoTool";
+    src: url("/fonts/ibm-plex-mono.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "HackTool";
+    src: url("/fonts/hack.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "InconsolataTool";
+    src: url("/fonts/inconsolata.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "UbuntuMonoTool";
+    src: url("/fonts/ubuntu-mono.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "SpaceMonoTool";
+    src: url("/fonts/space-mono.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "RobotoMonoTool";
+    src: url("/fonts/roboto-mono.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+  @font-face {
+    font-family: "CousineTool";
+    src: url("/fonts/cousine.woff2") format("woff2");
+    font-weight: 400; font-style: normal; font-display: swap;
+  }
+
   :root {
     --bg: #0f1419;
     --panel: #171d26;
@@ -32,6 +97,8 @@
     --warn: #f59e0b;
     --error: #ef4444;
     --mono: "Cascadia Mono", "Consolas", "Menlo", monospace;
+    /* 终端字体栈，由 <html data-font="..."> 覆盖；默认沿用系统等宽字体 */
+    --term-font: var(--mono);
 
     /* 按钮主色上的文字颜色（浅色主题需要改成深色） */
     --on-accent: #ffffff;
@@ -359,6 +426,31 @@
     --ansi-bgb6: #155e75;
     --ansi-bgb7: #443d5c;
   }
+
+  /* ==========================================================================
+     终端字体
+     通过 <html data-font="..."> 切换，只影响等宽区域（终端、日志、输入框）。
+     每套字体都带系统回退链，即使 Web 字体加载失败也不会退化成非等宽。
+     ========================================================================== */
+  html[data-font="jetbrains-mono"] { --term-font: "JBMonoTool", "JetBrains Mono", var(--mono); }
+  html[data-font="fira-code"]      { --term-font: "FiraCodeTool", "Fira Code", var(--mono); }
+  html[data-font="cascadia-code"]  { --term-font: "CascadiaTool", "Cascadia Code", var(--mono); }
+  html[data-font="source-code-pro"]{ --term-font: "SourceCodeProTool", "Source Code Pro", var(--mono); }
+  html[data-font="ibm-plex-mono"]  { --term-font: "IBMPlexMonoTool", "IBM Plex Mono", var(--mono); }
+  html[data-font="hack"]           { --term-font: "HackTool", "Hack", var(--mono); }
+  html[data-font="inconsolata"]    { --term-font: "InconsolataTool", "Inconsolata", var(--mono); }
+  html[data-font="ubuntu-mono"]    { --term-font: "UbuntuMonoTool", "Ubuntu Mono", var(--mono); }
+  html[data-font="space-mono"]     { --term-font: "SpaceMonoTool", "Space Mono", var(--mono); }
+  html[data-font="roboto-mono"]    { --term-font: "RobotoMonoTool", "Roboto Mono", var(--mono); }
+  html[data-font="cousine"]        { --term-font: "CousineTool", "Cousine", var(--mono); }
+  /* 连字类字体（Fira Code / JetBrains Mono / Cascadia）默认关闭连字，
+     避免 `->` `!=` `<=` 等被合并成单个字形，导致终端列宽与实际字符数不符。 */
+  html[data-font] #terminal,
+  html[data-font] .term-input,
+  html[data-font] .log {
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0, "calt" 0;
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     background: var(--bg);
@@ -394,8 +486,8 @@
   .badge.err { color: var(--error); border-color: var(--error); }
   .spacer { flex: 1; }
 
-  /* 主题选择器：贴在 header 右侧 */
-  .theme-picker {
+  /* header 右侧的下拉选择器（主题 / 字体） */
+  .picker {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -404,12 +496,14 @@
     color: var(--muted);
     white-space: nowrap;
   }
-  .theme-picker select {
+  .picker select {
     width: auto;
     padding: 4px 8px;
     font-size: 12px;
     cursor: pointer;
   }
+  /* 字体选择器用等宽字体预览，方便对比字形 */
+  #font-select { font-family: var(--term-font); }
 
   main {
     flex: 1;
@@ -502,7 +596,7 @@
     font-size: 12px;
     color: var(--muted);
     margin-top: 6px;
-    font-family: var(--mono);
+    font-family: var(--term-font);
     word-break: break-all;
   }
 
@@ -544,7 +638,7 @@
     flex: 1 1 auto;
     overflow-y: auto;
     padding: 12px 16px;
-    font-family: var(--mono);
+    font-family: var(--term-font);
     font-size: 13px;
     line-height: 1.5;
     white-space: pre-wrap;
@@ -637,19 +731,19 @@
     border-top: 1px solid var(--border);
     flex-shrink: 0;
     background: var(--panel);
-    font-family: var(--mono);
+    font-family: var(--term-font);
     font-size: 12px;
     color: var(--muted);
     align-items: center;
   }
   .term-input .hint { flex: 1; }
   .term-input input[type="text"] {
-    font-family: var(--mono);
+    font-family: var(--term-font);
     flex: 1;
   }
   .term-input button { width: auto; padding: 7px 16px; white-space: nowrap; }
   .term-input kbd {
-    font-family: var(--mono);
+    font-family: var(--term-font);
     font-size: 11px;
     background: var(--panel-2);
     border: 1px solid var(--border);
@@ -661,7 +755,7 @@
   #terminal.active { box-shadow: inset 0 0 0 1px var(--accent); }
 
   .log {
-    font-family: var(--mono);
+    font-family: var(--term-font);
     font-size: 12px;
     color: var(--muted);
     line-height: 1.6;
@@ -682,7 +776,7 @@
   <span id="conn-badge" class="badge off">未连接</span>
   <span id="port-badge" class="badge off">串口未打开</span>
   <div class="spacer"></div>
-  <label class="theme-picker" title="切换界面主题">
+  <label class="picker" title="切换界面主题">
     <span>主题</span>
     <select id="theme-select">
       <option value="default">深空蓝</option>
@@ -691,6 +785,23 @@
       <option value="contrast">高对比</option>
       <option value="warm">暖阳</option>
       <option value="violet">紫罗兰</option>
+    </select>
+  </label>
+  <label class="picker" title="切换终端字体（内嵌开源字体，离线可用）">
+    <span>字体</span>
+    <select id="font-select">
+      <option value="system">系统默认</option>
+      <option value="jetbrains-mono">JetBrains Mono</option>
+      <option value="fira-code">Fira Code</option>
+      <option value="cascadia-code">Cascadia Code</option>
+      <option value="source-code-pro">Source Code Pro</option>
+      <option value="ibm-plex-mono">IBM Plex Mono</option>
+      <option value="hack">Hack</option>
+      <option value="inconsolata">Inconsolata</option>
+      <option value="ubuntu-mono">Ubuntu Mono</option>
+      <option value="space-mono">Space Mono</option>
+      <option value="roboto-mono">Roboto Mono</option>
+      <option value="cousine">Cousine</option>
     </select>
   </label>
   <span id="ws-badge" class="badge err">服务离线</span>
@@ -920,6 +1031,50 @@
   function saveTheme(name) {
     try {
       localStorage.setItem(THEME_KEY, name);
+    } catch (e) {
+      // 忽略写入失败
+    }
+  }
+
+  // ---------- 终端字体 ----------
+  // 需与 <select id="font-select"> 中的 value 保持一致。
+  // "system" 表示不设置 data-font 属性，沿用系统等宽字体。
+  const FONTS = [
+    "system",
+    "jetbrains-mono", "fira-code", "cascadia-code", "source-code-pro",
+    "ibm-plex-mono", "hack", "inconsolata", "ubuntu-mono",
+    "space-mono", "roboto-mono", "cousine",
+  ];
+  const FONT_KEY = "xmodem.font";
+
+  /** 读取上次选择的字体；非法值回退到 system */
+  function loadFont() {
+    let f = null;
+    try {
+      f = localStorage.getItem(FONT_KEY);
+    } catch (e) {
+      f = null;
+    }
+    return FONTS.includes(f) ? f : "system";
+  }
+
+  /** 应用字体到 <html data-font="..."> */
+  function applyFont(name) {
+    const f = FONTS.includes(name) ? name : "system";
+    if (f === "system") {
+      document.documentElement.removeAttribute("data-font");
+    } else {
+      document.documentElement.setAttribute("data-font", f);
+    }
+    const sel = $("font-select");
+    if (sel && sel.value !== f) sel.value = f;
+    return f;
+  }
+
+  /** 保存字体选择 */
+  function saveFont(name) {
+    try {
+      localStorage.setItem(FONT_KEY, name);
     } catch (e) {
       // 忽略写入失败
     }
@@ -2382,6 +2537,12 @@
   applyTheme(loadTheme());
   $("theme-select").onchange = (e) => {
     saveTheme(applyTheme(e.target.value));
+  };
+
+  // 字体：同上
+  applyFont(loadFont());
+  $("font-select").onchange = (e) => {
+    saveFont(applyFont(e.target.value));
   };
 
   setPortOpen(false, null);

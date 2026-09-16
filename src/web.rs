@@ -2,6 +2,7 @@
 //!
 //! 提供：
 //! - `GET /` 返回内嵌的 HTML 前端
+//! - `GET /fonts/<name>.woff2` 返回内嵌的终端字体
 //! - `GET /ws` WebSocket 通道，承载终端数据与 XMODEM 控制
 
 use std::net::SocketAddr;
@@ -9,7 +10,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use axum::Router;
@@ -22,6 +24,25 @@ use crate::xmodem::Progress;
 
 /// 内嵌的前端页面
 const INDEX_HTML: &str = include_str!("../static/index.html");
+
+/// 内嵌的终端字体（woff2）。
+///
+/// 全部为 SIL OFL / Apache-2.0 等自由许可的开源等宽字体，
+/// 内嵌进二进制以保证**完全离线可用**（本工具的目标场景是嵌入式设备）。
+/// 文件名即 URL 路径 `/fonts/<name>.woff2` 中的 `<name>`。
+const FONTS: &[(&str, &[u8])] = &[
+    ("jetbrains-mono", include_bytes!("../static/fonts/jetbrains-mono.woff2")),
+    ("fira-code", include_bytes!("../static/fonts/fira-code.woff2")),
+    ("cascadia-code", include_bytes!("../static/fonts/cascadia-code.woff2")),
+    ("source-code-pro", include_bytes!("../static/fonts/source-code-pro.woff2")),
+    ("ibm-plex-mono", include_bytes!("../static/fonts/ibm-plex-mono.woff2")),
+    ("hack", include_bytes!("../static/fonts/hack.woff2")),
+    ("inconsolata", include_bytes!("../static/fonts/inconsolata.woff2")),
+    ("ubuntu-mono", include_bytes!("../static/fonts/ubuntu-mono.woff2")),
+    ("space-mono", include_bytes!("../static/fonts/space-mono.woff2")),
+    ("roboto-mono", include_bytes!("../static/fonts/roboto-mono.woff2")),
+    ("cousine", include_bytes!("../static/fonts/cousine.woff2")),
+];
 
 /// 应用共享状态
 #[derive(Default)]
@@ -38,6 +59,7 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(index))
+        .route("/fonts/{name}", get(font))
         .route("/ws", get(ws_handler))
         .with_state(state);
 
@@ -49,6 +71,29 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
 
 async fn index() -> impl IntoResponse {
     Html(INDEX_HTML)
+}
+
+/// 返回内嵌字体。
+///
+/// 字体内容在编译期固化，运行期不会读磁盘，因此不受工作目录影响。
+/// 由于文件名由编译期常量决定，这里用常量时间查找即可，不存在路径穿越风险。
+async fn font(Path(name): Path<String>) -> impl IntoResponse {
+    // 允许带或不带 .woff2 后缀
+    let key = name.strip_suffix(".woff2").unwrap_or(&name);
+
+    match FONTS.iter().find(|(n, _)| *n == key) {
+        Some((_, bytes)) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "font/woff2"),
+                // 内容随二进制版本变化，但同一版本内不变，可长期缓存
+                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            *bytes,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "font not found").into_response(),
+    }
 }
 
 async fn ws_handler(
