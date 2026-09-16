@@ -37,8 +37,33 @@ open = "5"
 default = ["libudev"]
 # 通过 udev 获取串口设备的详细信息（仅 Linux glibc 有效）
 libudev = ["serialport/libudev"]
+# 精简构建：用于存储紧张的嵌入式设备
+#
+# 与完整版的差别：
+#   - 前端改用 static/index.mini.html（无主题、无字体选择器）
+#   - 不嵌入任何字体（省约 289 KB）
+#   - 功能完全一致：终端模拟、ANSI 颜色、XMODEM、导出等都不变
+#
+# 用法：
+#   cargo build --release --no-default-features --features mini
+#   （musl 静态链接再加 --target x86_64-unknown-linux-musl）
+mini = []
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
+
+# mini 专用：以体积为最高优先级
+#
+# opt-level = "z"   优先压缩体积（而非速度）
+# strip = true      去掉符号表
+# panic = "abort"   去掉 unwind 表与清理代码
+# lto = "fat"       跨 crate 全局优化，配合 codegen-units = 1 效果最好
+[profile.release-mini]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -51,6 +51,7 @@
 - **数据导出**：把接收到的全部数据导出为文本 / HEX / 原始二进制
 - **10 套界面主题**：6 套深/浅色 + 4 套清新配色，选择后自动记忆（见下文）
 - **11 款内置开源终端字体** + **13 款系统字体**：两个维度互相隔离，可自由组合（见下文）
+- **mini 精简构建**：musl-static，不嵌字体，体积 2.88 MB → **1.24 MB**，功能不变（见下文）
 - **完整 ANSI 颜色支持**（见下文）
 - **实时进度**：显示包序号、字节数、百分比与重传提示
 - **可取消传输**：任意时刻中止发送，并向对端发送 CAN 序列
@@ -347,13 +348,48 @@ cargo build --release
 
 # 关闭 libudev（串口枚举退化为扫描 /dev/tty*）
 cargo build --release --no-default-features
+
+# mini 精简版（体积优先，见下文）
+cargo build --profile release-mini --no-default-features --features mini
 ```
+
+### mini 精简构建
+
+面向存储紧张的嵌入式设备。**功能完全一致**（终端模拟、完整 ANSI 颜色、
+XMODEM、导出等都不变），只做两件事：
+
+1. 不嵌入字体（省约 289 KB）
+2. 使用体积优先的编译选项（`opt-level = "z"` / `strip` / `panic = "abort"`）
+
+| 构建 | 体积 | 说明 |
+| --- | --- | --- |
+| 完整版 | **2.88 MB** | 含 11 款内嵌字体 |
+| mini 版 | **1.24 MB** | 无字体 |
+
+> 节省 1.64 MB（**57%**）。其中字体只占 0.29 MB，
+> 大头来自 `opt-level = "z"` 与 `strip` 对 Rust 依赖的压缩。
+
+**mini 版与完整版共用同一份 `index.html`**，不单独维护精简前端：
+
+- HTML 本身仅 93 KB（gzip 后 27 KB），远小于字体的 289 KB，
+  为它单独做一份精简版收益有限，还会与完整版漂移
+- 主题切换是纯 CSS，不依赖字体文件，因此 mini 下**依然可用**
+- 内置字体选择器在 mini 下没有字体文件，前端会**自动检测并置灰**，
+  标注「（不可用）」；系统字体维度不受影响，仍可正常使用
 
 ### Cargo features
 
 | feature | 默认 | 说明 |
 | --- | --- | --- |
 | `libudev` | ✅ 启用 | 通过 udev 获取串口设备的 USB VID/PID、厂商与产品名。仅 Linux glibc 有效；musl 目标自动跳过（`serialport` 用 `not(target_env = "musl")` 门控） |
+| `mini` | — | 精简构建：不嵌入字体，配合 `release-mini` profile 使用 |
+
+### 编译 profile
+
+| profile | 用途 | 关键设置 |
+| --- | --- | --- |
+| `release` | 默认发布 | `opt-level = 3`、`lto = true`、`codegen-units = 1` |
+| `release-mini` | mini 精简版 | `opt-level = "z"`、`lto = "fat"`、`panic = "abort"`、`strip = true` |
 
 ### CI 构建矩阵
 

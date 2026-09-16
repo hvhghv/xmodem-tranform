@@ -2,8 +2,21 @@
 //!
 //! 提供：
 //! - `GET /` 返回内嵌的 HTML 前端
-//! - `GET /fonts/<name>.woff2` 返回内嵌的终端字体
+//! - `GET /fonts/<name>.woff2` 返回内嵌的终端字体（仅完整版）
 //! - `GET /ws` WebSocket 通道，承载终端数据与 XMODEM 控制
+//!
+//! # mini 构建
+//!
+//! 启用 `mini` feature 时**不嵌入任何字体**（省约 289 KB）。
+//! 前端 HTML 与完整版**共用同一份**：
+//!   - HTML 本身只有 93 KB（gzip 后 27 KB），远小于字体的 289 KB，
+//!     为它单独维护一份精简版不划算，也容易与完整版漂移。
+//!   - 主题切换是纯 CSS，不依赖字体文件，因此 mini 下依然可用。
+//!   - 字体选择器在 mini 下会因为没有字体文件而无效，但不会报错；
+//!     用户仍可使用本机系统字体（系统字体维度不依赖内嵌文件）。
+//!
+//! 用法：
+//!   cargo build --profile release-mini --no-default-features --features mini
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -22,7 +35,7 @@ use crate::protocol::{b64_decode, b64_encode, ClientMessage, ServerMessage};
 use crate::serial::{self, SerialEvent, SerialSession};
 use crate::xmodem::Progress;
 
-/// 内嵌的前端页面
+/// 内嵌的前端页面（完整版与 mini 共用）
 const INDEX_HTML: &str = include_str!("../static/index.html");
 
 /// 内嵌的终端字体（woff2）。
@@ -30,6 +43,9 @@ const INDEX_HTML: &str = include_str!("../static/index.html");
 /// 全部为 SIL OFL / Apache-2.0 等自由许可的开源等宽字体，
 /// 内嵌进二进制以保证**完全离线可用**（本工具的目标场景是嵌入式设备）。
 /// 文件名即 URL 路径 `/fonts/<name>.woff2` 中的 `<name>`。
+///
+/// `mini` feature 下为空：精简构建不携带字体，以压缩体积。
+#[cfg(not(feature = "mini"))]
 const FONTS: &[(&str, &[u8])] = &[
     ("jetbrains-mono", include_bytes!("../static/fonts/jetbrains-mono.woff2")),
     ("fira-code", include_bytes!("../static/fonts/fira-code.woff2")),
@@ -43,6 +59,8 @@ const FONTS: &[(&str, &[u8])] = &[
     ("roboto-mono", include_bytes!("../static/fonts/roboto-mono.woff2")),
     ("cousine", include_bytes!("../static/fonts/cousine.woff2")),
 ];
+#[cfg(feature = "mini")]
+const FONTS: &[(&str, &[u8])] = &[];
 
 /// 应用共享状态
 #[derive(Default)]

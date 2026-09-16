@@ -769,8 +769,9 @@
   /* 字体选择器用等宽字体预览，方便对比字形 */
   #font-select { font-family: var(--term-font); }
   #sysfont-select { font-family: var(--term-font); }
-  /* 本机未安装的系统字体置灰，避免误选后看不到效果 */
+  /* 本机未安装的系统字体 / 服务端未提供的内置字体，一律置灰 */
   #sysfont-select option[data-available="0"] { color: var(--muted); }
+  #font-select option[data-available="0"] { color: var(--muted); }
 
   main {
     flex: 1;
@@ -1473,6 +1474,61 @@
     // 一个都没装时，提示用户该维度不可用
     if (available === 0) {
       sel.title = "本机未检测到列表中任何等宽字体，请改用内置字体";
+    }
+  }
+
+  /**
+   * 标注服务端未提供的内置字体。
+   *
+   * mini 构建不携带字体文件，此时 `/fonts/*.woff2` 全部 404，
+   * 对应的 @font-face 永远加载失败。这里通过 document.fonts 检测，
+   * 把不可用的选项置灰并提示，避免用户选了却没反应。
+   *
+   * 注意：@font-face 是惰性的（未使用不加载），因此需要显式
+   * 调用 document.fonts.load() 触发，再检查 status。
+   */
+  async function markUnavailableBuiltinFonts() {
+    const sel = $("font-select");
+    if (!sel) return;
+
+    // 逐个触发加载并检查结果；失败即视为服务端未提供
+    const checks = [];
+    for (const opt of sel.options) {
+      const family = BUILTIN_FONTS[opt.value];
+      if (!family) continue; // "不使用"
+      checks.push(
+        document.fonts
+          .load(`13px "${family}"`)
+          .then(() => {
+            const face = [...document.fonts].find((f) => f.family === family);
+            // loaded 才算成功；error / unloaded 都视为不可用
+            const ok = !!face && face.status === "loaded";
+            opt.dataset.available = ok ? "1" : "0";
+            if (!ok && !opt.textContent.endsWith("（不可用）")) {
+              opt.textContent += "（不可用）";
+            }
+            opt.title = ok ? "随程序内置，离线可用" : "当前构建未包含该字体";
+            return ok;
+          })
+          .catch(() => {
+            opt.dataset.available = "0";
+            if (!opt.textContent.endsWith("（不可用）")) {
+              opt.textContent += "（不可用）";
+            }
+            return false;
+          })
+      );
+    }
+
+    const results = await Promise.all(checks);
+    const anyOk = results.some(Boolean);
+    if (!anyOk) {
+      sel.title = "当前构建未内置字体，请改用「系统字体」或保持默认";
+      // 若当前选中的正是不可用的内置字体，回退到「不使用」
+      const cur = sel.value;
+      if (BUILTIN_FONTS[cur] && sel.selectedOptions[0]?.dataset.available === "0") {
+        saveChoice(FONT_KEY, applyFont("none"));
+      }
     }
   }
 
@@ -2948,6 +3004,9 @@
 
   // 标注本机实际可用的系统字体，未安装的置灰提示
   markUnavailableSysFonts();
+
+  // 标注服务端未提供的内置字体（mini 构建不带字体），异步完成
+  markUnavailableBuiltinFonts();
 
   setPortOpen(false, null);
   applyInputMode();
