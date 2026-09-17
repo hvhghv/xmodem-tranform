@@ -431,3 +431,157 @@ jobs:
           name: linux-musl-${{ matrix.arch }}-${{ matrix.linkage }}
           path: dist/*.tar.gz
           if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Linux musl mini：精简构建（不嵌字体 + release-mini profile），全部静态链接。
+  # 与 linux-musl 的差异仅在于构建命令与产物名，工具链配置完全一致。
+  # ---------------------------------------------------------------------------
+  linux-musl-mini:
+    name: Linux musl mini ${{ matrix.arch }} (static)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # test 表示该目标能否在当前 runner 上直接运行测试
+        # （静态 x64 可直接运行，其余架构无法执行）
+        include:
+          - { arch: x64,     target: x86_64-unknown-linux-musl,      test: true }
+          - { arch: arm64,   target: aarch64-unknown-linux-musl,     test: false }
+          - { arch: arm,     target: armv7-unknown-linux-musleabi,   test: false }
+          - { arch: riscv64, target: riscv64gc-unknown-linux-musl,   test: false }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 缓存 Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-musl-mini-${{ matrix.arch }}
+
+      # 工具链说明同 linux-musl job：musl-tools 只有 libc.a，无法满足需求；
+      # 这里统一使用 cross-software 工具链以保证 ABI 一致。
+      - name: 安装 musl 工具链
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          toolchain_tag='v15.1.0-musl-gcc'
+          toolchain_variant='lto-nodebug'
+
+          case '${{ matrix.arch }}' in
+            x64)     pkg_arch=x86_64  ; cc_prefix=x86_64-linux-musl ;;
+            arm64)   pkg_arch=aarch64 ; cc_prefix=aarch64-linux-musl ;;
+            arm)     pkg_arch=arm     ; cc_prefix=arm-linux-musleabi ;;
+            riscv64) pkg_arch=riscv64 ; cc_prefix=riscv64-linux-musl ;;
+            *)       echo "未配置的架构: ${{ matrix.arch }}"; exit 1 ;;
+          esac
+
+          asset="musl-toolchain-${pkg_arch}-${toolchain_variant}.tar.gz"
+          toolchain_url="https://github.com/hvhghv/cross-software/releases/download/${toolchain_tag}/${asset}"
+          echo "下载工具链: $toolchain_url"
+          curl -fsSL "$toolchain_url" -o /tmp/musl-toolchain.tar.gz
+
+          mkdir -p "$HOME/musl"
+          tar -xzf /tmp/musl-toolchain.tar.gz -C "$HOME/musl"
+
+          toolchain_root="$HOME/musl/musl-toolchain-${pkg_arch}-${toolchain_variant}"
+          if [ ! -d "$toolchain_root" ]; then
+            echo "未找到预期的工具链目录，实际内容："
+            ls -la "$HOME/musl"
+            exit 1
+          fi
+
+          echo "$toolchain_root/bin" >> "$GITHUB_PATH"
+          echo "MUSL_CC=$toolchain_root/bin/${cc_prefix}-gcc" >> "$GITHUB_ENV"
+          echo "工具链目录: $toolchain_root"
+
+      - name: 配置链接器
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          target_upper="$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')"
+          echo "CARGO_TARGET_${target_upper}_LINKER=$MUSL_CC" >> "$GITHUB_ENV"
+          echo "链接器: $MUSL_CC"
+
+      - name: 运行测试（仅可在本机执行的目标）
+        if: matrix.test
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUSTFLAGS='-C target-feature=+crt-static' \
+            cargo test --release --no-default-features --features mini --target ${{ matrix.target }}
+
+      - name: 构建
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # mini 一律静态链接
+          export RUSTFLAGS='-C target-feature=+crt-static'
+          echo "RUSTFLAGS=$RUSTFLAGS"
+
+          cargo build \
+            --profile release-mini \
+            --no-default-features \
+            --features mini \
+            --target ${{ matrix.target }}
+
+      - name: 校验链接方式
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release-mini/$BIN_NAME"
+
+          if command -v readelf >/dev/null 2>&1; then
+            if readelf -l "$bin" 2>/dev/null | grep -q 'INTERP'; then
+              actual='dynamic'
+            else
+              actual='static'
+            fi
+            echo "链接方式: $actual（期望 static）"
+            if [ "$actual" != 'static' ]; then
+              echo "::error::mini 版应为静态链接"
+              exit 1
+            fi
+          else
+            echo "readelf 不可用，跳过链接方式校验"
+          fi
+
+      - name: 校验体积
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release-mini/$BIN_NAME"
+          size_bytes=$(stat -c%s "$bin")
+          size_mb=$((size_bytes / 1024 / 1024))
+          echo "mini 产物体积: ${size_mb} MB (${size_bytes} 字节)"
+          # 精简版应显著小于完整版；超过 5 MB 说明 mini 特性或 profile 未生效
+          if [ "$size_bytes" -gt 5242880 ]; then
+            echo "::error::mini 产物过大（${size_mb} MB），请检查 mini feature 与 release-mini profile"
+            exit 1
+          fi
+
+      - name: 打包
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
+          stage="dist/$BIN_NAME-$version-linux-${{ matrix.arch }}-musl-static-mini"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.target }}/release-mini/$BIN_NAME" "$stage/"
+          cp README.md "$stage/"
+          tar -czf "$stage.tar.gz" -C dist "$(basename "$stage")"
+          echo "已打包: $stage.tar.gz"
+          ls -lh "$stage.tar.gz"
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-musl-mini-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error

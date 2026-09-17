@@ -495,7 +495,7 @@ XMODEM、导出等都不变），只做两件事：
 
 ### CI 构建矩阵
 
-推送代码或 PR 时，`.github/workflows/ci.yml` 会构建以下 14 个目标：
+推送代码或 PR 时，`.github/workflows/ci.yml` 会构建以下 18 个目标：
 
 | 平台 | 架构 | 目标三元组 | Runner | 构建方式 |
 | --- | --- | --- | --- | --- |
@@ -507,6 +507,7 @@ XMODEM、导出等都不变），只做两件事：
 | gnu | riscv64 | `riscv64gc-unknown-linux-gnu` | `ubuntu-latest` | 交叉 |
 | musl | x64 / arm64 | `*-unknown-linux-musl` | 视架构而定 | 原生，各出动态与静态两个版本 |
 | musl | arm / riscv64 | `*-unknown-linux-musl*` | `ubuntu-latest` | 交叉，各出动态与静态两个版本 |
+| **musl mini** | x64 / arm64 / arm / riscv64 | 同 musl | `ubuntu-latest` | 交叉，静态链接，`--features mini` + `release-mini` profile |
 
 **交叉编译说明**：
 
@@ -520,6 +521,8 @@ XMODEM、导出等都不变），只做两件事：
   需要硬浮点 ABI 请使用 gnu 版的 `armhf`
 - 交叉编译产物无法在 x64 runner 上执行，因此**只在原生目标（x64 / arm64）运行测试**；
   测试为纯逻辑单元测试，与架构无关
+- mini 版额外做两项校验：**链接方式必须为静态**、**产物体积上限 5 MB**
+  （超限说明 `mini` feature 或 `release-mini` profile 未生效）
 
 ### 发布
 
@@ -550,6 +553,8 @@ git push origin v0.1.0
 - 仅实现 XMODEM 发送方向，接收方向提供了 `parse_packet` / `verify_frame` 解析工具但未接入界面
 - 同一时刻只允许一个串口会话
 - 前端未实现 YMODEM 的批量文件与 1K 扩展协商
-- ANSI 支持为简化实现：颜色、属性、清屏/清行、光标定位已支持；
-  未实现全屏光标寻址与光标移动（`A`/`B`/`C`/`D`），因此 `vim`、`top` 等
-  需要完整终端模型的程序无法正常显示
+- 终端为**行缓冲 + 无限滚动**模型，没有固定行数：
+  - 全屏程序（`vi` / `vim` / `less` / `top`）依赖的备用屏（`?1049`）已支持，
+    退出后主屏内容能完整恢复；但它们假设终端有固定高度（如 24 行），
+    实际显示高度会随内容增长而不一致
+  - 未实现滚动区域（DECSTBM，`CSI r`）与 `CSI n` 设备状态查询回复
