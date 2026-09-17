@@ -2160,7 +2160,13 @@
       cursor.col = Math.max(0, n - 1);
       materializeCursorCell();
     } else if (dir === "row") {
-      cursor.row = Math.max(0, Math.min(screen.length - 1, n - 1));
+      // 绝对行定位（1-based）。真实终端里光标可以定位到屏幕任意行，
+      // 若目标行尚未存在则用空行补齐 —— 不能 clamp 到已有行数，
+      // 否则 `ESC[24;1H`（vi 退出时常用）会被压到当前末行，
+      // 导致后续写入落到错误位置。
+      const target = Math.max(0, n - 1);
+      while (screen.length <= target) screen.push({ cells: [] });
+      cursor.row = target;
     }
     dirtyRows.add(prevRow);
     dirtyRows.add(cursor.row);
@@ -2563,7 +2569,15 @@
 
   let ansiBuf = "";        // 跨包残留的未完成转义序列
 
+  /** 调试用：记录最近收到的原始字节（?debug=1 时通过 __term.raw() 读取） */
+  let rawLog = [];
+  function recordRaw(s) {
+    rawLog.push(s);
+    if (rawLog.length > 200) rawLog.shift();
+  }
+
   function feedAnsi(text) {
+    recordRaw(text);
     const data = ansiBuf + text;
     ansiBuf = "";
     let i = 0;
@@ -3552,6 +3566,8 @@
     window.__term = {
       feed: (s) => feedAnsi(s),
       clear: () => clearScreen(),
+      raw: () => rawLog.slice(),
+      rawClear: () => { rawLog = []; },
       screen: () => screen.map((l) => l.cells.map((c) => c.ch).join("")),
       cursor: () => ({ ...cursor }),
       sgr: () => ({ ...sgr }),
