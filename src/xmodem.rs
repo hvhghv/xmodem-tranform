@@ -82,6 +82,10 @@ pub enum Progress {
     Retry { packet: u32, attempt: u32 },
     /// 传输完成
     Finished { packets: u32, bytes: u64 },
+    /// 接收方向：已发出握手请求，等待发送方响应
+    WaitingSender,
+    /// 接收方向：已收到的包数量、已接收字节数
+    Received { packets: u32, bytes: u64 },
 }
 
 /// 计算 CRC-16/XMODEM（多项式 0x1021，初值 0x0000，不反转）
@@ -428,6 +432,295 @@ pub fn send<S: SerialIo>(
     Ok(())
 }
 
+/// 从流中读取一个完整的数据包帧（按已知的校验方式确定帧长）。
+///
+/// XMODEM 是字节流协议，发送方可能在任何位置开始发送，因此这里会
+/// **跳过所有非 SOH/STX 的字节**（设备提示符、回显、线路噪声），
+/// 直到遇到帧头再按帧长读取剩余部分。
+///
+/// 返回 `Ok(Some(frame))` 表示读到一个完整帧；`Ok(None)` 表示超时。
+fn read_frame<S: SerialIo>(
+    io: &mut S,
+    mode: ChecksumMode,
+    wait_timeout: Duration,
+) -> Result<Option<Vec<u8>>, XmodemError> {
+    // 第一阶段：等待帧头。发送方可能正忙于处理上一包的应答，
+    // 帧间间隔可能明显大于单字节间隔，因此这里用调用方给的等待超时。
+    let deadline = std::time::Instant::now() + wait_timeout;
+    let header = loop {
+        if io.is_cancelled() {
+            return Err(XmodemError::Cancelled);
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let slice = remaining.min(Duration::from_millis(200));
+        match io.read_byte(slice)? {
+            Some(b @ (SOH | STX)) => break b,
+            // 非帧头字节（噪声、回显）直接丢弃
+            Some(_) => continue,
+            None => continue,
+        }
+    };
+
+    let payload_len = if header == STX { PAYLOAD_1024 } else { PAYLOAD_128 };
+    let checksum_len = match mode {
+        ChecksumMode::Crc => 2,
+        ChecksumMode::Checksum => 1,
+    };
+    let total_len = 3 + payload_len + checksum_len;
+
+    // 第二阶段：读取帧剩余部分。帧内字节必须连续到达，
+    // 因此用较短的超时快速判定丢包。
+    let mut frame = Vec::with_capacity(total_len);
+    frame.push(header);
+    let inner_timeout = Duration::from_millis(500);
+    while frame.len() < total_len {
+        if io.is_cancelled() {
+            return Err(XmodemError::Cancelled);
+        }
+        match io.read_byte(inner_timeout)? {
+            Some(b) => frame.push(b),
+            None => return Ok(None), // 帧不完整，按丢包处理
+        }
+    }
+    Ok(Some(frame))
+}
+
+/// 使用 XMODEM 协议接收数据
+///
+/// - `mode`：本端请求的校验方式（`Crc` 发送 'C'，`Checksum` 发送 NAK）
+/// - `handshake_timeout`：等待发送方首个数据包的最长时间
+/// - `packet_timeout`：单包等待超时
+/// - `max_packets`：安全上限，防止无限接收耗尽内存（0 表示不限制）
+///
+/// 返回接收到的原始数据（已去除末尾的 SUB 填充）。
+pub fn receive<S: SerialIo>(
+    io: &mut S,
+    mode: ChecksumMode,
+    handshake_timeout: Duration,
+    packet_timeout: Duration,
+    max_packets: u32,
+    mut on_progress: impl FnMut(Progress),
+) -> Result<Vec<u8>, XmodemError> {
+    io.flush_input()?;
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut expected_no: u8 = 1;
+    let mut packets: u32 = 0;
+
+    // 握手：CRC 模式发 'C'，checksum 模式发 NAK。
+    // 发送方可能尚未就绪，因此周期性重发，直到收到第一个数据包。
+    let handshake_deadline = std::time::Instant::now() + handshake_timeout;
+    let mut next_handshake = std::time::Instant::now();
+    on_progress(Progress::WaitingSender);
+
+    let mut got_first = false;
+    while !got_first {
+        if io.is_cancelled() {
+            let _ = io.write_all(&[CAN, CAN, CAN]);
+            return Err(XmodemError::Cancelled);
+        }
+        if std::time::Instant::now() >= handshake_deadline {
+            return Err(XmodemError::Timeout);
+        }
+
+        if std::time::Instant::now() >= next_handshake {
+            let request = match mode {
+                ChecksumMode::Crc => CRC_CHAR,
+                ChecksumMode::Checksum => NAK,
+            };
+            io.write_all(&[request])?;
+            next_handshake = std::time::Instant::now() + Duration::from_secs(3);
+        }
+
+        match read_frame(io, mode, Duration::from_millis(300))? {
+            Some(frame) => match parse_packet(&frame) {
+                Some((no, payload, checksum))
+                    if verify_packet(payload, checksum, mode) && no == expected_no =>
+                {
+                    out.extend_from_slice(payload);
+                    io.write_all(&[ACK])?;
+                    packets += 1;
+                    expected_no = expected_no.wrapping_add(1);
+                    on_progress(Progress::HandshakeDone(mode));
+                    on_progress(Progress::Received {
+                        packets,
+                        bytes: out.len() as u64,
+                    });
+                    got_first = true;
+                }
+                // 校验失败或序号不符，请求重传
+                _ => {
+                    io.write_all(&[NAK])?;
+                }
+            },
+            None => continue, // 超时，重发握手字符
+        }
+    }
+
+    // 主循环：逐包接收，直到 EOT
+    let mut retries = 0u32;
+    loop {
+        if io.is_cancelled() {
+            let _ = io.write_all(&[CAN, CAN, CAN]);
+            return Err(XmodemError::Cancelled);
+        }
+
+        // read_frame 只认 SOH/STX 作为帧头，会把 EOT 当作噪声丢弃，
+        // 因此这里先单独探测一个字节：EOT 结束传输，CAN 判定取消，
+        // SOH/STX 则说明数据包已经开始，转交 read_frame 补全整帧。
+        match io.read_byte(packet_timeout)? {
+            Some(EOT) => {
+                io.write_all(&[ACK])?;
+                // 部分发送方会重发 EOT，补读一次做容错（读不到也无妨）
+                let _ = io.read_byte(Duration::from_millis(200));
+                break;
+            }
+            Some(CAN) => {
+                // 连续三个 CAN 才算真正取消
+                let mut cans = 1;
+                while cans < 3 {
+                    match io.read_byte(Duration::from_millis(200))? {
+                        Some(CAN) => cans += 1,
+                        Some(_) => continue,
+                        None => break,
+                    }
+                }
+                if cans >= 3 {
+                    return Err(XmodemError::RemoteCancel);
+                }
+                continue;
+            }
+            // 帧头已读到，补全整帧后按正常流程校验
+            Some(header @ (SOH | STX)) => {
+                match read_frame_after_header(io, mode, header) {
+                    Some(frame) => {
+                        if handle_frame(
+                            io,
+                            &frame,
+                            mode,
+                            &mut out,
+                            &mut expected_no,
+                            &mut packets,
+                            &mut retries,
+                            max_packets,
+                            &mut on_progress,
+                        )? {
+                            break;
+                        }
+                    }
+                    None => {
+                        // 帧不完整，请求重传
+                        io.write_all(&[NAK])?;
+                        retries += 1;
+                    }
+                }
+            }
+            // 噪声字节，忽略
+            Some(_) => continue,
+            None => {
+                // 超时：请求重传当前期望的包
+                io.write_all(&[NAK])?;
+                retries += 1;
+            }
+        }
+
+        if retries > MAX_RETRIES {
+            let _ = io.write_all(&[CAN, CAN, CAN]);
+            return Err(XmodemError::TooManyRetries(MAX_RETRIES));
+        }
+    }
+
+    // 去掉末尾的 SUB 填充字节（XMODEM 用 0x1A 补齐最后一个块）
+    while out.last() == Some(&SUB) {
+        out.pop();
+    }
+
+    on_progress(Progress::Finished {
+        packets,
+        bytes: out.len() as u64,
+    });
+    Ok(out)
+}
+
+/// 已读到帧头后，补全一个完整的数据包帧
+fn read_frame_after_header<S: SerialIo>(
+    io: &mut S,
+    mode: ChecksumMode,
+    header: u8,
+) -> Option<Vec<u8>> {
+    let payload_len = if header == STX { PAYLOAD_1024 } else { PAYLOAD_128 };
+    let checksum_len = match mode {
+        ChecksumMode::Crc => 2,
+        ChecksumMode::Checksum => 1,
+    };
+    let total_len = 3 + payload_len + checksum_len;
+
+    let mut frame = Vec::with_capacity(total_len);
+    frame.push(header);
+    let inner_timeout = Duration::from_millis(500);
+    while frame.len() < total_len {
+        match io.read_byte(inner_timeout) {
+            Ok(Some(b)) => frame.push(b),
+            // 读超时或出错都按帧不完整处理
+            _ => return None,
+        }
+    }
+    Some(frame)
+}
+
+/// 校验并处理一个已读全的数据包帧。
+///
+/// 返回 `Ok(true)` 表示收到 EOT 语义的终止（本函数不产生该结果，
+/// 保留返回值以便调用方统一处理循环退出）。
+#[allow(clippy::too_many_arguments)]
+fn handle_frame<S: SerialIo>(
+    io: &mut S,
+    frame: &[u8],
+    mode: ChecksumMode,
+    out: &mut Vec<u8>,
+    expected_no: &mut u8,
+    packets: &mut u32,
+    retries: &mut u32,
+    max_packets: u32,
+    on_progress: &mut impl FnMut(Progress),
+) -> Result<bool, XmodemError> {
+    match parse_packet(frame) {
+        Some((no, payload, checksum)) if verify_packet(payload, checksum, mode) => {
+            if no == *expected_no {
+                out.extend_from_slice(payload);
+                *packets += 1;
+                *expected_no = expected_no.wrapping_add(1);
+                *retries = 0;
+                io.write_all(&[ACK])?;
+                on_progress(Progress::Received {
+                    packets: *packets,
+                    bytes: out.len() as u64,
+                });
+                if max_packets > 0 && *packets >= max_packets {
+                    let _ = io.write_all(&[CAN, CAN, CAN]);
+                    return Err(XmodemError::TooManyRetries(max_packets));
+                }
+            } else if no == expected_no.wrapping_sub(1) {
+                // 重复包（上一个 ACK 丢失导致发送方重传）：再 ACK 一次
+                io.write_all(&[ACK])?;
+            } else {
+                // 序号跳跃，请求重传
+                io.write_all(&[NAK])?;
+                *retries += 1;
+            }
+        }
+        _ => {
+            // 校验失败或帧非法
+            io.write_all(&[NAK])?;
+            *retries += 1;
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,9 +858,8 @@ mod tests {
         fn write_all(&mut self, data: &[u8]) -> Result<(), XmodemError> {
             self.output.extend_from_slice(data);
             // 收到完整包后回 ACK；收到 EOT 也回 ACK
-            if data.len() > 1 && (data[0] == SOH || data[0] == STX) {
-                self.input.push_back(ACK);
-            } else if data == [EOT] {
+            let is_data_frame = data.len() > 1 && (data[0] == SOH || data[0] == STX);
+            if is_data_frame || data == [EOT] {
                 self.input.push_back(ACK);
             }
             Ok(())
@@ -777,5 +1069,538 @@ mod tests {
             wait_response(&mut io, Duration::from_millis(20)).unwrap(),
             None
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // 接收方向测试
+    // ---------------------------------------------------------------------
+
+    /// 模拟发送方：等待本端握手字符后，依次发送给定的数据包，最后发 EOT。
+    ///
+    /// 每个包发出后等待 ACK；收到 NAK 则重发当前包。
+    struct FakeSender {
+        /// 待发送的包负载（已按块大小切分）
+        payloads: Vec<Vec<u8>>,
+        /// 已发送到的包索引
+        idx: usize,
+        /// 当前包是否已发出、正在等待应答
+        awaiting_ack: bool,
+        /// 已收到的握手字符（'C' 或 NAK）
+        handshake_seen: bool,
+        /// 是否已发送 EOT
+        eot_sent: bool,
+        /// 本端写入的字节（握手字符与 ACK/NAK）
+        received: Vec<u8>,
+        mode: ChecksumMode,
+        /// 强制对第 N 个包（0-based）发一次损坏数据，用于测试重传
+        corrupt_once: Option<usize>,
+        corrupt_done: bool,
+        /// 记录每个包实际发送次数
+        send_counts: Vec<u32>,
+    }
+
+    impl FakeSender {
+        fn new(data: &[u8], mode: ChecksumMode, block: usize) -> Self {
+            Self {
+                payloads: split_into_payloads(data, block),
+                idx: 0,
+                awaiting_ack: false,
+                handshake_seen: false,
+                eot_sent: false,
+                received: Vec::new(),
+                mode,
+                corrupt_once: None,
+                corrupt_done: false,
+                send_counts: Vec::new(),
+            }
+        }
+
+        /// 构造下一个待发送的字节序列
+        fn next_bytes(&mut self) -> Option<Vec<u8>> {
+            if !self.handshake_seen {
+                return None;
+            }
+            if self.idx >= self.payloads.len() {
+                return if self.eot_sent {
+                    None
+                } else {
+                    self.eot_sent = true;
+                    Some(vec![EOT])
+                };
+            }
+            let no = ((self.idx + 1) & 0xFF) as u8;
+            let payload = &self.payloads[self.idx];
+            let mut frame = build_packet(no, payload, self.mode);
+            // 按需破坏一次校验，触发接收方 NAK 重传
+            if self.corrupt_once == Some(self.idx) && !self.corrupt_done {
+                let last = frame.len() - 1;
+                frame[last] ^= 0xFF;
+                self.corrupt_done = true;
+            }
+            if self.send_counts.len() == self.idx {
+                self.send_counts.push(1);
+            } else {
+                self.send_counts[self.idx] += 1;
+            }
+            self.awaiting_ack = true;
+            Some(frame)
+        }
+    }
+
+    impl SerialIo for FakeSender {
+        fn read_byte(&mut self, _timeout: Duration) -> Result<Option<u8>, XmodemError> {
+            // 本端（接收方）写入的字节在这里被“发送方”读到
+            if self.received.is_empty() {
+                return Ok(None);
+            }
+            let b = self.received.remove(0);
+            Ok(Some(b))
+        }
+        fn write_all(&mut self, data: &[u8]) -> Result<(), XmodemError> {
+            // 接收方写入：握手字符或 ACK/NAK
+            for &b in data {
+                match b {
+                    CRC_CHAR | NAK if !self.handshake_seen => {
+                        self.handshake_seen = true;
+                    }
+                    ACK => {
+                        if self.awaiting_ack {
+                            self.awaiting_ack = false;
+                            self.idx += 1;
+                        }
+                    }
+                    NAK => {
+                        // 重传当前包：不推进索引
+                        self.awaiting_ack = false;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        fn flush_input(&mut self) -> Result<(), XmodemError> {
+            self.received.clear();
+            Ok(())
+        }
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    /// 把 FakeSender 的待发数据喂给接收方。
+    ///
+    /// 由于 `receive` 会主动从 io 读字节，而 FakeSender 需要先看到握手字符
+    /// 才产生数据，这里用一个包装层把两者串起来：读操作先尝试从发送方取
+    /// 待发字节，取不到时返回 None（模拟超时）。
+    struct LoopbackIo {
+        sender: FakeSender,
+        /// 发送方待发的字节队列
+        pending: VecDeque<u8>,
+    }
+
+    impl LoopbackIo {
+        fn new(sender: FakeSender) -> Self {
+            Self {
+                sender,
+                pending: VecDeque::new(),
+            }
+        }
+
+        /// 若待发队列为空，向发送方索取下一批数据
+        fn refill(&mut self) {
+            if !self.pending.is_empty() {
+                return;
+            }
+            if let Some(bytes) = self.sender.next_bytes() {
+                self.pending.extend(bytes);
+            }
+        }
+    }
+
+    impl SerialIo for LoopbackIo {
+        fn read_byte(&mut self, _timeout: Duration) -> Result<Option<u8>, XmodemError> {
+            self.refill();
+            Ok(self.pending.pop_front())
+        }
+        fn write_all(&mut self, data: &[u8]) -> Result<(), XmodemError> {
+            // 接收方写入的 ACK/NAK/握手字符交给发送方处理
+            self.sender.write_all(data)
+        }
+        fn flush_input(&mut self) -> Result<(), XmodemError> {
+            self.pending.clear();
+            Ok(())
+        }
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn test_receive_success_crc_128() {
+        let data = vec![0x42u8; 300]; // 3 个 128 字节包
+        let sender = FakeSender::new(&data, ChecksumMode::Crc, PAYLOAD_128);
+        let mut io = LoopbackIo::new(sender);
+
+        let mut events = Vec::new();
+        let got = receive(
+            &mut io,
+            ChecksumMode::Crc,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+            0,
+            |p| events.push(p),
+        )
+        .unwrap();
+
+        assert_eq!(got, data, "接收内容应与发送内容一致");
+        assert!(matches!(events[0], Progress::WaitingSender));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Progress::HandshakeDone(ChecksumMode::Crc))));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Progress::Finished { packets: 3, bytes: 300 })));
+    }
+
+    #[test]
+    fn test_receive_strips_sub_padding() {
+        // 数据长度不是块大小的整数倍，末尾会被 SUB 填充
+        let data = vec![0x7Fu8; 130];
+        let sender = FakeSender::new(&data, ChecksumMode::Crc, PAYLOAD_128);
+        let mut io = LoopbackIo::new(sender);
+
+        let got = receive(
+            &mut io,
+            ChecksumMode::Crc,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+            0,
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(got.len(), 130, "末尾 SUB 填充应被去除");
+        assert_eq!(got, data);
+    }
+
+    #[test]
+    fn test_receive_checksum_mode() {
+        let data = vec![0x11u8; 100];
+        let sender = FakeSender::new(&data, ChecksumMode::Checksum, PAYLOAD_128);
+        let mut io = LoopbackIo::new(sender);
+
+        let got = receive(
+            &mut io,
+            ChecksumMode::Checksum,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+            0,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(got, data);
+    }
+
+    #[test]
+    fn test_receive_retransmits_on_corruption() {
+        let data = vec![0x33u8; 200]; // 2 个包
+        let mut sender = FakeSender::new(&data, ChecksumMode::Crc, PAYLOAD_128);
+        sender.corrupt_once = Some(0); // 第一个包首次发送时损坏
+        let mut io = LoopbackIo::new(sender);
+
+        let got = receive(
+            &mut io,
+            ChecksumMode::Crc,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+            0,
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(got, data, "损坏包重传后应完整接收");
+        // 第一个包应被发送两次（首次损坏 + 重传）
+        assert_eq!(io.sender.send_counts[0], 2, "损坏包应触发一次重传");
+    }
+
+    #[test]
+    fn test_receive_1k_packets() {
+        let data = vec![0x99u8; 2500]; // 3 个 1024 字节包
+        let sender = FakeSender::new(&data, ChecksumMode::Crc, PAYLOAD_1024);
+        let mut io = LoopbackIo::new(sender);
+
+        let got = receive(
+            &mut io,
+            ChecksumMode::Crc,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+            0,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(got, data);
+    }
+
+    #[test]
+    fn test_receive_skips_leading_noise() {
+        // 发送方数据前混入设备提示符等噪声字节
+        let data = vec![0x24u8; 50];
+        let sender = FakeSender::new(&data, ChecksumMode::Crc, PAYLOAD_128);
+        let mut io = LoopbackIo::new(sender);
+        // 手工塞入噪声（模拟发送前设备回显）
+        io.pending.extend(b"~ # \r\n".iter().copied());
+
+        let got = receive(
+            &mut io,
+            ChecksumMode::Crc,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+            0,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(got, data, "前导噪声应被跳过");
+    }
+
+    #[test]
+    fn test_receive_timeout_when_silent() {
+        struct Silent;
+        impl SerialIo for Silent {
+            fn read_byte(&mut self, _t: Duration) -> Result<Option<u8>, XmodemError> {
+                Ok(None)
+            }
+            fn write_all(&mut self, _d: &[u8]) -> Result<(), XmodemError> {
+                Ok(())
+            }
+            fn flush_input(&mut self) -> Result<(), XmodemError> {
+                Ok(())
+            }
+            fn is_cancelled(&self) -> bool {
+                false
+            }
+        }
+        let err = receive(
+            &mut Silent,
+            ChecksumMode::Crc,
+            Duration::from_millis(20),
+            Duration::from_millis(10),
+            0,
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, XmodemError::Timeout));
+    }
+
+    #[test]
+    fn test_receive_cancelled() {
+        struct Cancelled;
+        impl SerialIo for Cancelled {
+            fn read_byte(&mut self, _t: Duration) -> Result<Option<u8>, XmodemError> {
+                Ok(None)
+            }
+            fn write_all(&mut self, _d: &[u8]) -> Result<(), XmodemError> {
+                Ok(())
+            }
+            fn flush_input(&mut self) -> Result<(), XmodemError> {
+                Ok(())
+            }
+            fn is_cancelled(&self) -> bool {
+                true
+            }
+        }
+        let err = receive(
+            &mut Cancelled,
+            ChecksumMode::Crc,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+            0,
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, XmodemError::Cancelled));
+    }
+
+    #[test]
+    fn test_receive_respects_max_packets() {
+        let data = vec![0x01u8; 1000]; // 8 个包
+        let sender = FakeSender::new(&data, ChecksumMode::Crc, PAYLOAD_128);
+        let mut io = LoopbackIo::new(sender);
+
+        let err = receive(
+            &mut io,
+            ChecksumMode::Crc,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+            3, // 只允许 3 个包
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, XmodemError::TooManyRetries(3)));
+    }
+
+    #[test]
+    fn test_send_receive_roundtrip() {
+        // 端到端：用 send 生成的帧序列，验证 receive 能完整解析
+        let data: Vec<u8> = (0..=255u8).cycle().take(1500).collect();
+        let sender = FakeSender::new(&data, ChecksumMode::Crc, PAYLOAD_128);
+        let mut io = LoopbackIo::new(sender);
+
+        let got = receive(
+            &mut io,
+            ChecksumMode::Crc,
+            Duration::from_millis(200),
+            Duration::from_millis(100),
+            0,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(got, data, "往返数据应完全一致");
+    }
+
+    /// 真正的双端对接测试：`send` 与 `receive` 在两个线程里直接对话。
+    ///
+    /// 与 `LoopbackIo` 不同，这里两个方向都跑真实的协议实现，
+    /// 能验证握手协商、序号递增、EOT 收尾等完整交互。
+    #[test]
+    fn test_send_and_receive_interoperate() {
+        use std::sync::{Arc, Condvar, Mutex as StdMutex};
+
+        /// 线程安全的双向字节管道
+        #[derive(Default)]
+        struct Pipe {
+            to_sender: VecDeque<u8>,
+            to_receiver: VecDeque<u8>,
+        }
+
+        struct Shared {
+            pipe: StdMutex<Pipe>,
+            cv: Condvar,
+        }
+
+        /// 接收方视角的 io
+        struct PipeReceiver(Arc<Shared>);
+        /// 发送方视角的 io
+        struct PipeSender(Arc<Shared>);
+
+        impl PipeReceiver {
+            #[allow(dead_code)]
+            fn read(&self) -> Option<u8> {
+                let mut p = self.0.pipe.lock().unwrap();
+                p.to_receiver.pop_front()
+            }
+        }
+
+        impl SerialIo for PipeReceiver {
+            fn read_byte(&mut self, timeout: Duration) -> Result<Option<u8>, XmodemError> {
+                let mut p = self.0.pipe.lock().unwrap();
+                let deadline = std::time::Instant::now() + timeout;
+                loop {
+                    if let Some(b) = p.to_receiver.pop_front() {
+                        return Ok(Some(b));
+                    }
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
+                        return Ok(None);
+                    }
+                    let (guard, _) = self.0.cv.wait_timeout(p, deadline - now).unwrap();
+                    p = guard;
+                }
+            }
+            fn write_all(&mut self, data: &[u8]) -> Result<(), XmodemError> {
+                let mut p = self.0.pipe.lock().unwrap();
+                p.to_sender.extend(data.iter().copied());
+                self.0.cv.notify_all();
+                Ok(())
+            }
+            fn flush_input(&mut self) -> Result<(), XmodemError> {
+                self.0.pipe.lock().unwrap().to_receiver.clear();
+                Ok(())
+            }
+            fn is_cancelled(&self) -> bool {
+                false
+            }
+        }
+
+        impl SerialIo for PipeSender {
+            fn read_byte(&mut self, timeout: Duration) -> Result<Option<u8>, XmodemError> {
+                let mut p = self.0.pipe.lock().unwrap();
+                // 在 timeout 内等待接收方写入应答
+                let deadline = std::time::Instant::now() + timeout;
+                loop {
+                    if let Some(b) = p.to_sender.pop_front() {
+                        return Ok(Some(b));
+                    }
+                    let now = std::time::Instant::now();
+                    if now >= deadline {
+                        return Ok(None);
+                    }
+                    let (guard, _) = self
+                        .0
+                        .cv
+                        .wait_timeout(p, deadline - now)
+                        .unwrap();
+                    p = guard;
+                }
+            }
+            fn write_all(&mut self, data: &[u8]) -> Result<(), XmodemError> {
+                let mut p = self.0.pipe.lock().unwrap();
+                p.to_receiver.extend(data.iter().copied());
+                self.0.cv.notify_all();
+                Ok(())
+            }
+            fn flush_input(&mut self) -> Result<(), XmodemError> {
+                Ok(())
+            }
+            fn is_cancelled(&self) -> bool {
+                false
+            }
+        }
+
+        let data: Vec<u8> = (0..=255u8).cycle().take(700).collect();
+        let shared = Arc::new(Shared {
+            pipe: StdMutex::new(Pipe {
+                to_sender: VecDeque::new(),
+                to_receiver: VecDeque::new(),
+            }),
+            cv: Condvar::new(),
+        });
+
+        // 接收方线程
+        let rx_shared = shared.clone();
+        let rx_handle = std::thread::spawn(move || {
+            let mut io = PipeReceiver(rx_shared);
+            receive(
+                &mut io,
+                ChecksumMode::Crc,
+                Duration::from_millis(2000),
+                Duration::from_millis(500),
+                0,
+                |_| {},
+            )
+        });
+
+        // 发送方线程
+        let tx_shared = shared.clone();
+        let tx_data = data.clone();
+        let tx_handle = std::thread::spawn(move || {
+            let mut io = PipeSender(tx_shared);
+            send(
+                &mut io,
+                &tx_data,
+                Duration::from_millis(2000),
+                Duration::from_millis(500),
+                false,
+                |_| {},
+            )
+        });
+
+        let tx_result = tx_handle.join().expect("发送线程 panic");
+        let rx_result = rx_handle.join().expect("接收线程 panic");
+
+        if let Err(e) = &tx_result {
+            panic!("发送失败: {e}");
+        }
+        let got = rx_result.expect("接收应成功");
+        assert_eq!(got, data, "双端对接应完整还原数据");
     }
 }

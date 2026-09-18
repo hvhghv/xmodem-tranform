@@ -936,6 +936,30 @@
   .checkline { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
   .checkline label { margin: 0; color: var(--text); font-size: 13px; }
 
+  /* 发送 / 接收 切换标签 */
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--muted);
+    padding: 6px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: color .15s, border-color .15s;
+  }
+  .tab:hover:not(:disabled) { background: transparent; color: var(--text); }
+  .tab.active {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+
   /* 进度条 */
   .progress-wrap { margin-top: 10px; }
   .progress-bar {
@@ -1290,29 +1314,82 @@
     </div>
 
     <div class="section">
-      <h2>XMODEM 发送</h2>
-      <div class="field">
-        <label>文件</label>
-        <input type="file" id="file-input">
+      <h2>XMODEM 传输</h2>
+      <div class="tabs" role="tablist">
+        <button class="tab active" id="tab-send" role="tab" aria-selected="true">发送</button>
+        <button class="tab" id="tab-recv" role="tab" aria-selected="false">接收</button>
       </div>
-      <div class="checkline">
-        <input type="checkbox" id="use-1k">
-        <label for="use-1k">使用 XMODEM-1K（1024 字节包）</label>
-      </div>
-      <div class="row">
+
+      <!-- 发送面板 -->
+      <div id="pane-x-send">
         <div class="field">
-          <label>握手超时 (秒)</label>
-          <input type="number" id="hs-timeout" value="60" min="1">
+          <label>文件</label>
+          <input type="file" id="file-input">
         </div>
+        <div class="checkline">
+          <input type="checkbox" id="use-1k">
+          <label for="use-1k">使用 XMODEM-1K（1024 字节包）</label>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>握手超时 (秒)</label>
+            <input type="number" id="hs-timeout" value="60" min="1">
+          </div>
+          <div class="field">
+            <label>包超时 (毫秒)</label>
+            <input type="number" id="pkt-timeout" value="3000" min="100">
+          </div>
+        </div>
+        <div class="row">
+          <button id="btn-send" disabled>开始发送</button>
+          <button class="secondary" id="btn-cancel" disabled>取消</button>
+        </div>
+      </div>
+
+      <!-- 接收面板 -->
+      <div id="pane-x-recv" style="display:none">
         <div class="field">
-          <label>包超时 (毫秒)</label>
-          <input type="number" id="pkt-timeout" value="3000" min="100">
+          <label>保存文件名</label>
+          <input type="text" id="recv-filename" placeholder="received.bin">
+        </div>
+        <div class="checkline">
+          <input type="checkbox" id="recv-1k">
+          <label for="recv-1k">接受 XMODEM-1K（1024 字节包）</label>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>校验方式</label>
+            <select id="recv-checksum">
+              <option value="crc" selected>CRC16（推荐）</option>
+              <option value="checksum">8 位累加和</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>最大包数 (0=不限)</label>
+            <input type="number" id="recv-max-packets" value="0" min="0">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>握手超时 (秒)</label>
+            <input type="number" id="recv-hs-timeout" value="60" min="1">
+          </div>
+          <div class="field">
+            <label>包超时 (毫秒)</label>
+            <input type="number" id="recv-pkt-timeout" value="3000" min="100">
+          </div>
+        </div>
+        <div class="row">
+          <button id="btn-recv" disabled>开始接收</button>
+          <button class="secondary" id="btn-recv-cancel" disabled>取消</button>
+        </div>
+        <div class="hint" id="recv-hint">
+          <b>操作顺序</b>：先在设备端执行接收命令（如 <code>rx file</code>），
+          设备进入等待后，再点「开始接收」。<br>
+          若先点「开始接收」，本端发出的握手字符会被设备 shell 当作命令输入。
         </div>
       </div>
-      <div class="row">
-        <button id="btn-send" disabled>开始发送</button>
-        <button class="secondary" id="btn-cancel" disabled>取消</button>
-      </div>
+
       <div class="progress-wrap">
         <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
         <div class="progress-text" id="progress-text">就绪</div>
@@ -1791,6 +1868,8 @@
     portOpen: false,
     portName: null,
     sending: false,
+    /** 是否正在执行 XMODEM 接收（下载） */
+    receiving: false,
     /** 输入模式："terminal"（逐键即时发送）| "textbox"（整段输入后发送） */
     inputMode: "terminal",
     /** 显示模式："text" | "hex" */
@@ -3124,6 +3203,7 @@
 
       case "xmodem_done": {
         state.sending = false;
+        state.receiving = false;
         updateButtons();
         if (msg.success) {
           termWriteLine(`*** XMODEM 传输完成 ***`, "ok");
@@ -3135,6 +3215,12 @@
           log(`传输失败: ${msg.message}`);
           $("progress-text").textContent = `失败: ${msg.message}`;
         }
+        break;
+      }
+
+      case "xmodem_file": {
+        // 接收完成：后端下发文件内容，前端触发浏览器下载
+        downloadFile(msg.filename, msg.data);
         break;
       }
 
@@ -3175,6 +3261,16 @@
       text.textContent = msg.message;
     } else if (msg.stage === "retry") {
       text.textContent = msg.message;
+    } else if (msg.stage === "received") {
+      // 接收方向没有总字节数（发送方不一定事先告知），
+      // 因此进度条按「已收到多少」做不确定态展示，只更新文字。
+      text.textContent = msg.message;
+      // 用脉冲式宽度提示仍在进行中
+      fill.style.width = "100%";
+      fill.style.opacity = "0.5";
+    } else if (msg.stage === "waiting_sender") {
+      text.textContent = msg.message;
+      fill.style.width = "0%";
     } else {
       text.textContent = msg.message;
     }
@@ -3207,8 +3303,12 @@
     const open = state.portOpen;
     $("btn-open").disabled = !canOpen;
     $("btn-close").disabled = !open;
-    $("btn-send").disabled = !open || state.sending;
+    const busy = state.sending || state.receiving;
+    $("btn-send").disabled = !open || busy;
     $("btn-cancel").disabled = !state.sending;
+    // 接收方向
+    $("btn-recv").disabled = !open || busy;
+    $("btn-recv-cancel").disabled = !state.receiving;
     $("btn-focus").disabled = !open;
     // 文本框模式控件
     $("term-text").disabled = !open;
@@ -3283,6 +3383,66 @@
     send({ type: "xmodem_cancel" });
     log("已请求取消传输");
   };
+
+  // ---------- XMODEM 接收（下载） ----------
+  $("btn-recv").onclick = () => {
+    const name = ($("recv-filename").value || "").trim() || "received.bin";
+    const payload = {
+      type: "xmodem_receive",
+      filename: name,
+      use_1k: $("recv-1k").checked,
+      checksum: $("recv-checksum").value,
+      handshake_timeout_ms: Math.max(1, parseInt($("recv-hs-timeout").value, 10) || 60) * 1000,
+      packet_timeout_ms: Math.max(100, parseInt($("recv-pkt-timeout").value, 10) || 3000),
+      max_packets: Math.max(0, parseInt($("recv-max-packets").value, 10) || 0),
+    };
+    if (!send(payload)) return;
+    state.receiving = true;
+    updateButtons();
+    $("progress-fill").style.width = "0%";
+    $("progress-text").textContent = "等待发送方...";
+    termWriteLine(`>>> 开始接收，保存为 ${name}`, "tx");
+    log(`开始接收，保存为 ${name}`);
+  };
+
+  $("btn-recv-cancel").onclick = () => {
+    send({ type: "xmodem_cancel" });
+    log("已请求取消接收");
+  };
+
+  /** 触发浏览器下载（接收完成后由后端下发文件内容） */
+  function downloadFile(filename, b64) {
+    try {
+      const bytes = b64ToBytes(b64);
+      const blob = new Blob([bytes], { type: "application/octet-stream" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename || "received.bin";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // 稍后释放，确保下载已开始
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      log(`已下载 ${filename}（${bytes.length} 字节）`);
+      termWriteLine(`<<< 接收完成，已下载 ${filename}（${bytes.length} 字节）`, "rx");
+    } catch (e) {
+      log(`下载失败: ${e.message}`);
+    }
+  }
+
+  // ---------- 发送 / 接收 标签切换 ----------
+  function setXmodemTab(tab) {
+    const isSend = tab === "send";
+    $("tab-send").classList.toggle("active", isSend);
+    $("tab-recv").classList.toggle("active", !isSend);
+    $("tab-send").setAttribute("aria-selected", String(isSend));
+    $("tab-recv").setAttribute("aria-selected", String(!isSend));
+    $("pane-x-send").style.display = isSend ? "" : "none";
+    $("pane-x-recv").style.display = isSend ? "none" : "";
+  }
+  $("tab-send").onclick = () => setXmodemTab("send");
+  $("tab-recv").onclick = () => setXmodemTab("recv");
 
   // ---------- 终端输入 ----------
   function sendBytes(bytes) {

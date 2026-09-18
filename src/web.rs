@@ -33,7 +33,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::protocol::{b64_decode, b64_encode, ClientMessage, ServerMessage};
 use crate::serial::{self, SerialEvent, SerialSession};
-use crate::xmodem::Progress;
+use crate::xmodem::{self, Progress};
 
 /// 内嵌的前端页面（完整版与 mini 共用）
 const INDEX_HTML: &str = include_str!("../static/index.html");
@@ -67,6 +67,9 @@ const FONTS: &[(&str, &[u8])] = &[];
 pub struct AppState {
     /// 当前打开的串口会话（同一时刻仅允许一个）
     session: Mutex<Option<Arc<SerialSession>>>,
+    /// 当前 XMODEM 接收请求的文件名，接收完成后随文件一起下发给前端。
+    /// 用 `Arc` 包裹以便在事件转发任务中共享。
+    recv_filename: Arc<Mutex<String>>,
 }
 
 type SharedState = Arc<AppState>;
@@ -198,6 +201,9 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                         // 订阅串口事件并转发到前端
                         let mut events = session.subscribe();
                         let tx_events = tx.clone();
+                        // 事件转发任务需要读取接收文件名，这里先取出共享句柄
+                        // （state 本身已被后续代码使用，不能整体 move 进来）
+                        let recv_filename = state.recv_filename.clone();
                         serial_task = Some(tokio::spawn(async move {
                             loop {
                                 match events.recv().await {
@@ -213,6 +219,19 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                                     }
                                     Ok(SerialEvent::XmodemProgress(p)) => {
                                         let _ = tx_events.send(progress_to_message(p)).await;
+                                    }
+                                    Ok(SerialEvent::XmodemReceived(data)) => {
+                                        // 接收完成：把文件内容下发，由前端触发下载。
+                                        // 文件名在请求时已记录在共享状态上。
+                                        let filename = recv_filename.lock().await.clone();
+                                        let bytes = data.len() as u64;
+                                        let _ = tx_events
+                                            .send(ServerMessage::XmodemFile {
+                                                filename,
+                                                data: b64_encode(&data),
+                                                bytes,
+                                            })
+                                            .await;
                                     }
                                     Ok(SerialEvent::XmodemDone(result)) => {
                                         let (success, message) = match result {
@@ -373,6 +392,50 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
                     debug!("已请求取消 XMODEM 传输");
                 }
             }
+
+            ClientMessage::XmodemReceive {
+                filename,
+                use_1k,
+                checksum,
+                handshake_timeout_ms,
+                packet_timeout_ms,
+                max_packets,
+            } => {
+                let mode = match checksum.as_deref() {
+                    Some("checksum") => xmodem::ChecksumMode::Checksum,
+                    _ => xmodem::ChecksumMode::Crc,
+                };
+                let session = state.session.lock().await.clone();
+                match session {
+                    Some(s) => {
+                        // 记录文件名，供接收完成后下发时使用
+                        *state.recv_filename.lock().await = filename.clone();
+                        info!(
+                            "开始 XMODEM 接收: {filename} (1K={use_1k}, 校验={})",
+                            mode.as_str()
+                        );
+                        if let Err(e) = s.xmodem_receive(
+                            mode,
+                            Duration::from_millis(handshake_timeout_ms),
+                            Duration::from_millis(packet_timeout_ms),
+                            max_packets,
+                        ) {
+                            let _ = tx
+                                .send(ServerMessage::Error {
+                                    message: e.to_string(),
+                                })
+                                .await;
+                        }
+                    }
+                    None => {
+                        let _ = tx
+                            .send(ServerMessage::Error {
+                                message: "请先打开串口".into(),
+                            })
+                            .await;
+                    }
+                }
+            }
         }
     }
 
@@ -426,6 +489,23 @@ fn progress_to_message(p: Progress) -> ServerMessage {
             bytes: 0,
             total_bytes: 0,
             message: format!("第 {packet} 包重传（第 {attempt} 次）"),
+        },
+        // ---- 接收方向 ----
+        Progress::WaitingSender => ServerMessage::Progress {
+            stage: "waiting_sender".into(),
+            sent: 0,
+            total: 0,
+            bytes: 0,
+            total_bytes: 0,
+            message: "等待发送方发起传输...".into(),
+        },
+        Progress::Received { packets, bytes } => ServerMessage::Progress {
+            stage: "received".into(),
+            sent: packets,
+            total: 0,
+            bytes,
+            total_bytes: 0,
+            message: format!("已接收 {packets} 包 / {bytes} 字节"),
         },
         Progress::Finished { packets, bytes } => ServerMessage::Progress {
             stage: "finished".into(),

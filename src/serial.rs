@@ -180,6 +180,8 @@ pub enum SerialEvent {
     XmodemProgress(Progress),
     /// XMODEM 传输结束（Ok 表示成功）
     XmodemDone(Result<(), String>),
+    /// XMODEM 接收完成，携带收到的数据
+    XmodemReceived(Vec<u8>),
     /// 串口已关闭
     Closed,
     /// 串口错误
@@ -196,6 +198,13 @@ enum SerialCommand {
         use_1k: bool,
         handshake_timeout: Duration,
         packet_timeout: Duration,
+    },
+    /// 执行 XMODEM 接收
+    XmodemRecv {
+        mode: xmodem::ChecksumMode,
+        handshake_timeout: Duration,
+        packet_timeout: Duration,
+        max_packets: u32,
     },
     /// 取消当前 XMODEM 传输
     CancelXmodem,
@@ -291,6 +300,28 @@ impl SerialSession {
             .map_err(|_| anyhow::anyhow!("串口已关闭"))
     }
 
+    /// 执行 XMODEM 接收（下载）
+    ///
+    /// 进度与结果通过 [`SerialEvent`] 广播上报；收到的数据通过
+    /// [`SerialEvent::XmodemReceived`] 下发。
+    pub fn xmodem_receive(
+        &self,
+        mode: xmodem::ChecksumMode,
+        handshake_timeout: Duration,
+        packet_timeout: Duration,
+        max_packets: u32,
+    ) -> anyhow::Result<()> {
+        self.cancel_flag.store(false, Ordering::SeqCst);
+        self.cmd_tx
+            .send(SerialCommand::XmodemRecv {
+                mode,
+                handshake_timeout,
+                packet_timeout,
+                max_packets,
+            })
+            .map_err(|_| anyhow::anyhow!("串口已关闭"))
+    }
+
     /// 关闭串口（可重复调用，幂等）
     pub fn close(&self) {
         let _ = self.cmd_tx.send(SerialCommand::Shutdown);
@@ -348,6 +379,19 @@ impl SerialWorker {
                         packet_timeout,
                     }) => {
                         self.run_xmodem(data, use_1k, handshake_timeout, packet_timeout);
+                    }
+                    Ok(SerialCommand::XmodemRecv {
+                        mode,
+                        handshake_timeout,
+                        packet_timeout,
+                        max_packets,
+                    }) => {
+                        self.run_xmodem_receive(
+                            mode,
+                            handshake_timeout,
+                            packet_timeout,
+                            max_packets,
+                        );
                     }
                     Ok(SerialCommand::CancelXmodem) => {
                         // 取消标志已由调用方设置，这里补发 CAN 通知接收方
@@ -436,6 +480,50 @@ impl SerialWorker {
             }
         };
         let _ = self.event_tx.send(SerialEvent::XmodemDone(done));
+    }
+
+    /// 在串口线程内执行 XMODEM 接收，进度与数据通过广播事件上报
+    fn run_xmodem_receive(
+        &mut self,
+        mode: xmodem::ChecksumMode,
+        handshake_timeout: Duration,
+        packet_timeout: Duration,
+        max_packets: u32,
+    ) {
+        let event_tx = self.event_tx.clone();
+        let result = {
+            let mut io = PortIo {
+                port: &mut self.port,
+                cancel: &self.cancel_flag,
+            };
+            xmodem::receive(
+                &mut io,
+                mode,
+                handshake_timeout,
+                packet_timeout,
+                max_packets,
+                |p| {
+                    let _ = event_tx.send(SerialEvent::XmodemProgress(p));
+                },
+            )
+        };
+        match result {
+            Ok(data) => {
+                info!("XMODEM 接收完成: {} 字节", data.len());
+                let _ = self.event_tx.send(SerialEvent::XmodemReceived(data));
+                let _ = self.event_tx.send(SerialEvent::XmodemDone(Ok(())));
+            }
+            Err(XmodemError::Cancelled) => {
+                warn!("XMODEM 接收被取消");
+                let _ = self
+                    .event_tx
+                    .send(SerialEvent::XmodemDone(Err("接收被取消".to_string())));
+            }
+            Err(e) => {
+                error!("XMODEM 接收失败: {e}");
+                let _ = self.event_tx.send(SerialEvent::XmodemDone(Err(e.to_string())));
+            }
+        }
     }
 }
 

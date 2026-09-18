@@ -41,6 +41,27 @@ pub enum ClientMessage {
     },
     /// 取消 XMODEM 发送
     XmodemCancel,
+    /// 开始 XMODEM 接收（下载）
+    XmodemReceive {
+        /// 期望保存的文件名（仅用于界面显示与下载命名）
+        #[serde(default)]
+        filename: String,
+        /// 是否请求 1024 字节包（XMODEM-1K）
+        #[serde(default)]
+        use_1k: bool,
+        /// 使用的校验方式：crc（默认）| checksum
+        #[serde(default)]
+        checksum: Option<String>,
+        /// 握手超时（毫秒）
+        #[serde(default = "default_handshake_timeout")]
+        handshake_timeout_ms: u64,
+        /// 单包超时（毫秒）
+        #[serde(default = "default_packet_timeout")]
+        packet_timeout_ms: u64,
+        /// 最大接收包数（0 表示不限制）
+        #[serde(default)]
+        max_packets: u32,
+    },
     /// 清空终端（前端本地操作，后端仅记录）
     Ping,
 }
@@ -82,6 +103,15 @@ pub enum ServerMessage {
     XmodemDone {
         success: bool,
         message: String,
+        bytes: u64,
+    },
+    /// XMODEM 接收完成，下发文件内容（base64）
+    ///
+    /// 仅在接收成功时发送；`filename` 为前端请求时给出的文件名，
+    /// 前端据此触发浏览器下载。
+    XmodemFile {
+        filename: String,
+        data: String,
         bytes: u64,
     },
     /// 错误提示
